@@ -17,7 +17,7 @@ namespace CalculationLog
 {
 
 // Starts one process-wide NanoLog stream. The output path comes from
-// FASTTRACK_CALCULATION_LOG or a unique /tmp path when unset.
+// FASTTRACK_CALCULATION_LOG or a unique working-directory path when unset.
 void initialize();
 
 // Warm the NanoLog thread-local staging buffer before a worker enters a hot

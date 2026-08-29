@@ -23,7 +23,7 @@ std::string g_log_path;
 std::string defaultLogPath()
 {
   const auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
-  return std::string("/tmp/fasttrack-calculations-") + std::to_string(static_cast<long long>(::getpid())) +
+  return std::string("fasttrack-calculations-") + std::to_string(static_cast<long long>(::getpid())) +
          "-" + std::to_string(static_cast<long long>(ticks)) + ".nlog";
 }
 

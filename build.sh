@@ -171,8 +171,7 @@ cmd_lint_quick() {
   fi
 
   echo "== cppcheck (production C++ sources) =="
-  local cppcheck_project
-  cppcheck_project="$(mktemp --suffix=.json)"
+  local cppcheck_project="${lint_quick_build_dir}/cppcheck-project.json"
   cppcheck_project_for_sources "$compile_database" "$cppcheck_project"
   cppcheck --project="$cppcheck_project" --enable=all --inconclusive \
     --error-exitcode=1 -D"$(cppcheck_arch_define)" || status=1
