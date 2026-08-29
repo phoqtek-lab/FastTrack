@@ -4693,6 +4693,16 @@ int Optimizer::PoseInertialOptimizationLastKeyFrame(Frame *pFrame, bool bRecInit
     ear->setInformation(InfoA);
     optimizer.addEdge(ear);
 
+    // ZUPT: if stationary, prior on current-frame velocity = 0
+    if(pFrame->IsStationary())
+    {
+        EdgePriorVelocity* epv = new EdgePriorVelocity();
+        epv->setVertex(0,VV);
+        epv->setMeasurement(Eigen::Vector3d::Zero());
+        epv->setInformation(Eigen::Matrix3d::Identity() * 1e4);
+        optimizer.addEdge(epv);
+    }
+
     // We perform 4 optimizations, after each optimization we classify observation as inlier/outlier
     // At the next optimization, outliers are not included, but at the end they can be classified as inliers again.
     float chi2Mono[4]={12,7.5,5.991,5.991};
@@ -5078,6 +5088,16 @@ int Optimizer::PoseInertialOptimizationLastFrame(Frame *pFrame, bool bRecInit)
     Eigen::Matrix3d InfoA = pFrame->mpImuPreintegrated->C.block<3,3>(12,12).cast<double>().inverse();
     ear->setInformation(InfoA);
     optimizer.addEdge(ear);
+
+    // ZUPT: if stationary, prior on current-frame velocity = 0
+    if(pFrame->IsStationary())
+    {
+        EdgePriorVelocity* epv = new EdgePriorVelocity();
+        epv->setVertex(0,VV);
+        epv->setMeasurement(Eigen::Vector3d::Zero());
+        epv->setInformation(Eigen::Matrix3d::Identity() * 1e4);
+        optimizer.addEdge(epv);
+    }
 
     if (!pFp->mpcpi)
         Verbose::PrintMess("pFp->mpcpi does not exist!!!\nPrevious Frame " + to_string(pFp->mnId), Verbose::VERBOSITY_NORMAL);

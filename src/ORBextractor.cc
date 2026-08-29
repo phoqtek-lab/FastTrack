@@ -15,6 +15,7 @@
 #include <opencv2/imgproc/imgproc.hpp>
 #include <vector>
 #include <iostream>
+#include <cstdlib>
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -1230,18 +1231,25 @@ namespace ORB_SLAM3
     {
         allKeypoints.resize(nlevels);
 
-        fast_extract(d_images, d_inputImage, iniThFAST, minThFAST, d_R, d_R_low, d_points, n_, d_corner_buffer, d_corner_size, cols, rows, imageStep, d_scaleFactor, nlevels, cudaStream, interComplete, this->mvImagePyramid[0]);
-        compute_orientation(d_images, d_inputImage, d_corner_buffer, this->d_corner_size, rows*cols, this->umax_gpu, imageStep, nlevels, cols, rows, d_scaleFactor, cudaStream);
+        const int cand_stride = CudaUtils::maxCandidatesPerLevel;
+
+        fast_extract(d_images, d_inputImage, iniThFAST, minThFAST, d_R, d_R_low, d_points, n_, d_corner_buffer, d_corner_size, cols, rows, imageStep, d_scaleFactor, nlevels, cudaStream, interComplete, this->mvImagePyramid[0], cand_stride);
+        compute_orientation(d_images, d_inputImage, d_corner_buffer, this->d_corner_size, cand_stride, this->umax_gpu, imageStep, nlevels, cols, rows, d_scaleFactor, cudaStream);
         cudaStreamWaitEvent(cudaStream, blurComplete, 0);
-        compute_descriptor(d_imagesBlured, d_inputImageBlured, d_corner_buffer, d_corner_size, rows*cols, d_pattern, imageStep, nlevels, cols, rows, d_scaleFactor, cudaStream);
+        compute_descriptor(d_imagesBlured, d_inputImageBlured, d_corner_buffer, d_corner_size, cand_stride, d_pattern, imageStep, nlevels, cols, rows, d_scaleFactor, cudaStream);
         uint corner_size[nlevels];
         cudaMemcpyAsync(corner_size, this->d_corner_size, sizeof(uint)*nlevels, cudaMemcpyDeviceToHost, cudaStream);
         cudaStreamSynchronize(cudaStream);
 
+
         for (int level = 0; level < nlevels; ++level){
             uint size = corner_size[level];
-            ORB_SLAM3::GpuPoint *corner_buffer = &(this->corner_buffer[level*rows*cols]);
-            ORB_SLAM3::GpuPoint *d_corner_buffer = &(this->d_corner_buffer[level*rows*cols]);
+            if (size > (uint)cand_stride) {
+                fprintf(stderr, "[ORBextractor::] FAST candidate buffer saturated (level %d size %u budget %d): raising the corners from the first %d found. Consider increasing the candidate budget.\n", level, size, cand_stride, cand_stride);
+                size = (uint)cand_stride;
+            }
+            ORB_SLAM3::GpuPoint *corner_buffer = &(this->corner_buffer[level*cand_stride]);
+            ORB_SLAM3::GpuPoint *d_corner_buffer = &(this->d_corner_buffer[level*cand_stride]);
             cudaMemcpyAsync(corner_buffer, d_corner_buffer, sizeof(GpuPoint)*size, cudaMemcpyDeviceToHost, cudaStream);
         }
         cudaStreamSynchronize(cudaStream);
@@ -1261,7 +1269,8 @@ namespace ORB_SLAM3
             const int maxBorderY = new_rows-EDGE_THRESHOLD+3;
 
             uint size = corner_size[level];
-            ORB_SLAM3::GpuPoint *corner_buffer = &(this->corner_buffer[level*rows*cols]);
+            if (size > (uint)cand_stride) size = (uint)cand_stride;
+            ORB_SLAM3::GpuPoint *corner_buffer = &(this->corner_buffer[level*cand_stride]);
 
             for(uint i=0; i<size; i++)
             {
@@ -1301,9 +1310,7 @@ namespace ORB_SLAM3
         checkCudaError(cudaFree(this->d_R_low), "[ORBextractor::] Failed to free d_R_low");
 
         checkCudaError(cudaFree(this->d_corner_buffer), "[ORBextractor::] Failed to free d_corner_buffer");
-        checkCudaError(cudaFreeHost(this->corner_buffer), "[ORBextractor::] Failed to free corner_buffer");
-        // checkCudaError(cudaFreeHost(this->score), "[ORBextractor::] Failed to free ");
-
+        std::free(this->corner_buffer);
         checkCudaError(cudaFree(d_images), "[ORBextractor::] Failed to free d_images");
         checkCudaError(cudaFree(d_imagesBlured), "[ORBextractor::] Failed to free d_imagesBlured");
         checkCudaError(cudaFreeHost(outputImages), "[ORBextractor::] Failed to free outputImages");
@@ -1318,11 +1325,23 @@ namespace ORB_SLAM3
     }
 
     void ORBextractor::allocMemory(int w, int h, int imageStep) {
+        // Single source of truth for the per-level FAST candidate capacity.
+        // MUST be a FIXED, instance-independent constant: ORB-SLAM3 creates a
+        // second ORBextractor (with 5*nfeatures) during map-init, and if this
+        // value depended on this->nfeatures it would be overwritten by that
+        // instance, causing the FIRST extractor's kernels to index its smaller
+        // corner buffer out of bounds. Keeping it fixed guarantees all instances
+        // agree on the per-level stride and capacity.
+        CudaUtils::maxCandidatesPerLevel = 200000;
         checkCudaError(cudaMalloc(&(this->d_R), sizeof(uint8_t)*w*h*this->nlevels), "[ORBextractor::] Failed to allocate memory for d_R");
         checkCudaError(cudaMalloc(&(this->d_R_low), sizeof(uint8_t)*w*h*this->nlevels), "[ORBextractor::] Failed to allocate memory for d_R_low");
 
-        checkCudaError(cudaMalloc(&(this->d_corner_buffer), sizeof(GpuPoint)*w*h*this->nlevels), "[ORBextractor::] Failed to allocate memory for d_corner_buffer");
-        checkCudaError(cudaMallocHost(&(this->corner_buffer), sizeof(GpuPoint)*w*h*this->nlevels), "[ORBextractor::] Failed to allocate memory for corner_buffer");
+        checkCudaError(cudaMalloc(&(this->d_corner_buffer), sizeof(GpuPoint)*CudaUtils::maxCandidatesPerLevel*this->nlevels), "[ORBextractor::] Failed to allocate memory for d_corner_buffer");
+        this->corner_buffer = (ORB_SLAM3::GpuPoint*)std::malloc(sizeof(GpuPoint)*CudaUtils::maxCandidatesPerLevel*this->nlevels);
+        if (this->corner_buffer == nullptr) {
+            fprintf(stderr, "[ORBextractor::] Failed to allocate memory for corner_buffer (pageable)\n");
+            throw std::bad_alloc();
+        }
         // checkCudaError(cudaMallocHost(&(this->score), sizeof(int)*w*h*this->nlevels), "[ORBextractor::] Failed to allocate memory for ");
 
         checkCudaError(cudaMalloc(&d_images, sizeof(uchar)*w*h*nlevels), "[ORBextractor::] Failed to allocate memory for d_images");

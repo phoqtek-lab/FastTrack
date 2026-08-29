@@ -132,6 +132,10 @@ public:
 
     bool isSet() const;
 
+    // Zero Velocity Update (ZUPT) support: marks the frame as stationary.
+    void SetStationary(bool b);
+    bool IsStationary() const;
+
     // Computes rotation, translation and camera center matrices from the camera pose.
     void UpdatePoseMatrices();
 
@@ -324,6 +328,8 @@ private:
     bool mbIsSet;
 
     bool mbImuPreintegrated;
+
+    bool mbIsStationary;
 
     std::mutex *mpMutexImu;
 

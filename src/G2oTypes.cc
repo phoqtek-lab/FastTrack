@@ -773,6 +773,13 @@ void EdgePriorGyro::linearizeOplus()
 
 }
 
+void EdgePriorVelocity::linearizeOplus()
+{
+    // Jacobian wrt velocity
+    _jacobianOplusXi.block<3,3>(0,0) = - Eigen::Matrix3d::Identity();
+
+}
+
 // SO3 FUNCTIONS
 Eigen::Matrix3d ExpSO3(const Eigen::Vector3d &w)
 {

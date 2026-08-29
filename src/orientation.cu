@@ -53,7 +53,7 @@ __device__ inline float ic_angle_gpu(const uchar *image, int x, int y, int *u_ma
     return kp_dir;
 }
 
-__global__ void compute_orientation_kernel(const uchar *images, const uchar *inputImage, ORB_SLAM3::GpuPoint *pointsTotal, const uint *sizes, int* umax, int inputImageStep, int maxLevel, const float *mvScaleFactor, int cols, int rows) {
+__global__ void compute_orientation_kernel(const uchar *images, const uchar *inputImage, ORB_SLAM3::GpuPoint *pointsTotal, const uint *sizes, int* umax, int inputImageStep, int maxLevel, const float *mvScaleFactor, int cols, int rows, int stride) {
     const int index = blockIdx.x * blockDim.x + threadIdx.x;
     const int level = blockIdx.y * blockDim.y + threadIdx.y;
     if (level >= maxLevel)
@@ -64,7 +64,7 @@ __global__ void compute_orientation_kernel(const uchar *images, const uchar *inp
         return;
     }
 
-    ORB_SLAM3::GpuPoint *points = &(pointsTotal[level*cols*rows]);
+    ORB_SLAM3::GpuPoint *points = &(pointsTotal[level*stride]);
 
     const uchar* im[2] = {inputImage, &(images[level*cols*rows])};
     const int imIndex = (level == 0) * 0 + (level != 0) * 1;
@@ -90,5 +90,5 @@ void compute_orientation(uchar *images, uchar *inputImage, ORB_SLAM3::GpuPoint *
     dim3 dg( ceil( (float)maxPointsLevel/128 ), ceil((float)maxLevel/8) );
     dim3 db( 128, 8 );
 
-    compute_orientation_kernel<<<dg, db, 0, cudaStream>>>(images, inputImage, points, sizes, umax, inputImageStep, maxLevel, mvScaleFactor, cols, rows);
+    compute_orientation_kernel<<<dg, db, 0, cudaStream>>>(images, inputImage, points, sizes, umax, inputImageStep, maxLevel, mvScaleFactor, cols, rows, maxPointsLevel);
 }

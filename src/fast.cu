@@ -241,7 +241,7 @@ __device__ bool isMax(int x, int y, int step, uint8_t *scoreMat) {
 }
 
 __global__
-void fast_corner(uchar *images, uchar *inputImage, uint8_t *d_Rs, ORB_SLAM3::GpuPoint *buffers, int rows, int cols, uint8_t t_h, uint8_t t_low, uint *sizes, float *mvScaleFactor, int maxLevel, int inputImageStep){
+void fast_corner(uchar *images, uchar *inputImage, uint8_t *d_Rs, ORB_SLAM3::GpuPoint *buffers, int rows, int cols, uint8_t t_h, uint8_t t_low, uint *sizes, float *mvScaleFactor, int maxLevel, int inputImageStep, int cand_stride){
     const int tid = threadIdx.y * blockDim.x + threadIdx.x;
     const int level = blockIdx.z * blockDim.z + threadIdx.z;
 
@@ -267,9 +267,7 @@ void fast_corner(uchar *images, uchar *inputImage, uint8_t *d_Rs, ORB_SLAM3::Gpu
     const uchar *image = im[imIndex];
 
     uint *size = &(sizes[level]);
-    ORB_SLAM3::GpuPoint *buffer = &(buffers[level*cols*rows]);
-
-    const uint maxKeypoints = w*h;
+    ORB_SLAM3::GpuPoint *buffer = &(buffers[level*cand_stride]);
 
     __shared__ bool hasKp;
     if (tid == 0) {
@@ -292,10 +290,18 @@ void fast_corner(uchar *images, uchar *inputImage, uint8_t *d_Rs, ORB_SLAM3::Gpu
             if (isMax(x, y+t, imageStep, d_Rs)) {
                 int score = d_Rs[index(x, y+t, imageStep)];
                 hasKp = true;
-                const unsigned int ind = atomicInc(size, maxKeypoints);
-                buffer[ind].x = x;
-                buffer[ind].y = y+t;
-                buffer[ind].score = score;
+                // Append with an overflow-safe clamp: atomicInc returns the old
+                // counter and wraps at 0xFFFFFFFF; we only write inside the
+                // per-level budget and drop (decrement) on overflow so the final
+                // size always equals the number of stored candidates.
+                const unsigned int ind = atomicInc(size, 0xFFFFFFFFu);
+                if (ind < (unsigned int)cand_stride) {
+                    buffer[ind].x = x;
+                    buffer[ind].y = y+t;
+                    buffer[ind].score = score;
+                } else {
+                    atomicSub(size, 1u);
+                }
             }
         }
     }
@@ -317,10 +323,14 @@ void fast_corner(uchar *images, uchar *inputImage, uint8_t *d_Rs, ORB_SLAM3::Gpu
         if (isKp[t]) {
             if (isMax(x, y+t, imageStep, d_Rs)) {
                 int score = d_Rs[index(x, y+t, imageStep)];
-                const unsigned int ind = atomicInc(size, maxKeypoints);
-                buffer[ind].x = x;
-                buffer[ind].y = y+t;
-                buffer[ind].score = score;
+                const unsigned int ind = atomicInc(size, 0xFFFFFFFFu);
+                if (ind < (unsigned int)cand_stride) {
+                    buffer[ind].x = x;
+                    buffer[ind].y = y+t;
+                    buffer[ind].score = score;
+                } else {
+                    atomicSub(size, 1u);
+                }
             }
         }
     }
@@ -480,7 +490,7 @@ void fast_choise(uint8_t *d_Rs, uint8_t *d_Rs_low, float *mvScaleFactor, int max
 }
 
 __global__
-void interpolate(const uint8_t *d_Rs, int cols, int rows, ORB_SLAM3::GpuPoint *buffers, uint *sizes, float *mvScaleFactor, int maxLevel){
+void interpolate(const uint8_t *d_Rs, int cols, int rows, ORB_SLAM3::GpuPoint *buffers, uint *sizes, float *mvScaleFactor, int maxLevel, int cand_stride){
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
     const int level = blockIdx.z * blockDim.z + threadIdx.z;
@@ -510,7 +520,7 @@ void interpolate(const uint8_t *d_Rs, int cols, int rows, ORB_SLAM3::GpuPoint *b
         return;
 
     uint *size = &(sizes[level]);
-    ORB_SLAM3::GpuPoint *buffer = &(buffers[level*cols*rows]);
+    ORB_SLAM3::GpuPoint *buffer = &(buffers[level*cand_stride]);
 
     const int imageStep = new_cols;
 
@@ -536,15 +546,18 @@ void interpolate(const uint8_t *d_Rs, int cols, int rows, ORB_SLAM3::GpuPoint *b
     if (val == 0)
         return;
 
-    const uint id = atomicInc(size, dim);
-
-    buffer[id].x = x+minBorderX;
-    buffer[id].y = y+minBorderY;
-    buffer[id].score = val;
+    const uint id = atomicInc(size, 0xFFFFFFFFu);
+    if (id < (uint)cand_stride) {
+        buffer[id].x = x+minBorderX;
+        buffer[id].y = y+minBorderY;
+        buffer[id].score = val;
+    } else {
+        atomicSub(size, 1u);
+    }
 
 }
 
-void fast_extract( uchar *images, uchar *inputImage, uint8_t th, uint8_t th_low, uint8_t *d_Rs, uint8_t *d_Rs_low, int *points, int n_, ORB_SLAM3::GpuPoint *buffers, uint *sizes, int cols, int rows, int inputImageStep, float* mvScaleFactor, int maxLevel, cudaStream_t cudaStream, cudaEvent_t interComplete, cv::Mat pyramid){
+void fast_extract( uchar *images, uchar *inputImage, uint8_t th, uint8_t th_low, uint8_t *d_Rs, uint8_t *d_Rs_low, int *points, int n_, ORB_SLAM3::GpuPoint *buffers, uint *sizes, int cols, int rows, int inputImageStep, float* mvScaleFactor, int maxLevel, cudaStream_t cudaStream, cudaEvent_t interComplete, cv::Mat pyramid, int cand_stride){
 //    dim3 dg( ceil( (float)cols/16 ), ceil( (float)rows/8 ), ceil((float)maxLevel/4) );
 //    dim3 db( 16, 8, 4);
 //
@@ -560,7 +573,7 @@ void fast_extract( uchar *images, uchar *inputImage, uint8_t th, uint8_t th_low,
 //    unsigned int init = 0;
 //    cudaMalloc(&my_counter_d, sizeof(unsigned int));
 //    cudaMemcpy(my_counter_d, &init, sizeof(unsigned int), cudaMemcpyHostToDevice);
-    fast_corner<<<dimGrid, dimBlock, 0, cudaStream>>>(images, inputImage, d_Rs, buffers, rows, cols, th, th_low, sizes, mvScaleFactor, maxLevel, inputImageStep);
+    fast_corner<<<dimGrid, dimBlock, 0, cudaStream>>>(images, inputImage, d_Rs, buffers, rows, cols, th, th_low, sizes, mvScaleFactor, maxLevel, inputImageStep, cand_stride);
 //    cudaStreamSynchronize(cudaStream);
 //    unsigned int counter;
 //    cudaMemcpyAsync(&counter, sizes, sizeof(unsigned int), cudaMemcpyDeviceToHost, cudaStream);

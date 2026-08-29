@@ -75,6 +75,7 @@ Tracking::Tracking(System *pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer,
     std::signal(SIGINT, Tracking::signalHandler);
 
     // Load camera parameters from settings file
+    mSettingsPath = strSettingPath;
     if(settings){
         newParameterLoader(settings);
     }
@@ -648,6 +649,74 @@ void Tracking::newParameterLoader(Settings *settings) {
     mpImuCalib = new IMU::Calib(Tbc,Ng*sf,Na*sf,Ngw/sf,Naw/sf);
 
     mpImuPreintegratedFromLastKF = new IMU::Preintegrated(IMU::Bias(),*mpImuCalib);
+
+    // ZUPT (Zero Velocity Update) parameters from settings file
+    mbZuptEnabled = false;
+    mZuptWindow = (int)mImuFreq;
+    mZuptGyroVarTh = 1e-3;
+    mZuptAccelVarTh = 1e-1;
+    mZuptHystEnter = 3;
+    mZuptHystExit = 3;
+    mZuptExitRatio = 3.0;
+    mZuptGyroMeanGate = 0.03;
+    mZuptAccelNormGate = 0.3;
+    mZuptVelGate = 0.05;
+    mbZuptActive = false;
+    mZuptEnterCount = 0;
+    mZuptExitCount = 0;
+    mlZuptImuWindow.clear();
+
+    cv::FileStorage fZupt(mSettingsPath, cv::FileStorage::READ);
+    if(fZupt.isOpened())
+    {
+        cv::FileNode node = fZupt["IMU.ZUPT.Enabled"];
+        mbZuptEnabled = !node.empty() && node.isInt() && static_cast<int>(node) != 0;
+        node = fZupt["IMU.ZUPT.Window"];
+        if(!node.empty() && node.isInt() && node.operator int() > 0)
+            mZuptWindow = node.operator int();
+        node = fZupt["IMU.ZUPT.GyroVarTh"];
+        if(!node.empty() && node.isReal() && node.real() > 0)
+            mZuptGyroVarTh = node.real();
+        node = fZupt["IMU.ZUPT.AccelVarTh"];
+        if(!node.empty() && node.isReal() && node.real() > 0)
+            mZuptAccelVarTh = node.real();
+        node = fZupt["IMU.ZUPT.HystEnter"];
+        if(!node.empty() && node.isInt() && node.operator int() > 0)
+            mZuptHystEnter = node.operator int();
+        node = fZupt["IMU.ZUPT.HystExit"];
+        if(!node.empty() && node.isInt() && node.operator int() > 0)
+            mZuptHystExit = node.operator int();
+        node = fZupt["IMU.ZUPT.ExitRatio"];
+        if(!node.empty() && node.isReal() && node.real() >= 1.0)
+            mZuptExitRatio = node.real();
+        node = fZupt["IMU.ZUPT.GyroMeanGate"];
+        if(!node.empty() && node.isReal() && node.real() > 0)
+            mZuptGyroMeanGate = node.real();
+        node = fZupt["IMU.ZUPT.AccelNormGate"];
+        if(!node.empty() && node.isReal() && node.real() > 0)
+            mZuptAccelNormGate = node.real();
+        node = fZupt["IMU.ZUPT.VelGate"];
+        if(!node.empty() && node.isReal() && node.real() > 0)
+            mZuptVelGate = node.real();
+    }
+
+    if(mbZuptEnabled)
+    {
+        cout << "ZUPT enabled (window=" << mZuptWindow << ", gyroVarTh=" << mZuptGyroVarTh
+             << ", accelVarTh=" << mZuptAccelVarTh << ", hystEnter=" << mZuptHystEnter
+             << ", hystExit=" << mZuptHystExit << ", exitRatio=" << mZuptExitRatio
+             << ", gyroMeanGate=" << mZuptGyroMeanGate << ", accelNormGate=" << mZuptAccelNormGate
+             << ", velGate=" << mZuptVelGate << ")" << endl;
+    }
+    else
+    {
+        cout << "ZUPT disabled (set IMU.ZUPT.Enabled=1 to enable)" << endl;
+    }
+
+    if(mbZuptEnabled)
+    {
+        cout << endl << "ZUPT loaded from settings file" << endl;
+    }
 }
 
 bool Tracking::ParseCamParamFile(cv::FileStorage &fSettings)
@@ -1456,6 +1525,44 @@ bool Tracking::ParseIMUParamFile(cv::FileStorage &fSettings)
         mFastInit = static_cast<int>(fSettings["IMU.fastInit"]) != 0;
     }
 
+    node = fSettings["IMU.ZUPT.Enabled"];
+    mbZuptEnabled = (node.isInt() && static_cast<int>(node) != 0);
+    node = fSettings["IMU.ZUPT.Window"];
+    mZuptWindow = (node.isInt() && node.operator int() > 0) ? node.operator int() : (int)mImuFreq;
+    node = fSettings["IMU.ZUPT.GyroVarTh"];
+    mZuptGyroVarTh = (node.isReal() && node.real() > 0) ? node.real() : 1e-3;
+    node = fSettings["IMU.ZUPT.AccelVarTh"];
+    mZuptAccelVarTh = (node.isReal() && node.real() > 0) ? node.real() : 1e-1;
+    node = fSettings["IMU.ZUPT.HystEnter"];
+    mZuptHystEnter = (node.isInt() && node.operator int() > 0) ? node.operator int() : 3;
+    node = fSettings["IMU.ZUPT.HystExit"];
+    mZuptHystExit = (node.isInt() && node.operator int() > 0) ? node.operator int() : 3;
+    node = fSettings["IMU.ZUPT.ExitRatio"];
+    mZuptExitRatio = (node.isReal() && node.real() >= 1.0) ? node.real() : 3.0;
+    node = fSettings["IMU.ZUPT.GyroMeanGate"];
+    mZuptGyroMeanGate = (node.isReal() && node.real() > 0) ? node.real() : 0.03;
+    node = fSettings["IMU.ZUPT.AccelNormGate"];
+    mZuptAccelNormGate = (node.isReal() && node.real() > 0) ? node.real() : 0.3;
+    node = fSettings["IMU.ZUPT.VelGate"];
+    mZuptVelGate = (node.isReal() && node.real() > 0) ? node.real() : 0.05;
+
+    mbZuptActive = false;
+    mZuptEnterCount = 0;
+    mZuptExitCount = 0;
+
+    if(mbZuptEnabled)
+    {
+        cout << "ZUPT enabled (window=" << mZuptWindow << ", gyroVarTh=" << mZuptGyroVarTh
+             << ", accelVarTh=" << mZuptAccelVarTh << ", hystEnter=" << mZuptHystEnter
+             << ", hystExit=" << mZuptHystExit << ", exitRatio=" << mZuptExitRatio
+             << ", gyroMeanGate=" << mZuptGyroMeanGate << ", accelNormGate=" << mZuptAccelNormGate
+             << ", velGate=" << mZuptVelGate << ")" << endl;
+    }
+    else
+    {
+        cout << "ZUPT disabled (set IMU.ZUPT.Enabled=1 to enable)" << endl;
+    }
+
     if(mFastInit)
         cout << "Fast IMU initialization. Acceleration is not checked \n";
 
@@ -1678,6 +1785,17 @@ void Tracking::GrabImuData(const IMU::Point &imuMeasurement)
 {
     unique_lock<mutex> lock(mMutexImuQueue);
     mlQueueImuData.push_back(imuMeasurement);
+
+    if(mbZuptEnabled)
+    {
+        mlZuptImuWindow.push_back(imuMeasurement);
+        while ((int)mlZuptImuWindow.size() > mZuptWindow)
+            mlZuptImuWindow.pop_front();
+    }
+    else if(!mlZuptImuWindow.empty())
+    {
+        mlZuptImuWindow.clear();
+    }
 }
 
 void Tracking::PreintegrateIMU()
@@ -1734,8 +1852,9 @@ void Tracking::PreintegrateIMU()
     }
 
     const int n = mvImuFromLastFrame.size()-1;
-    if(n==0){
+    if(n<=0){
         cout << "Empty IMU measurements vector!!!\n";
+        mCurrentFrame.setIntegrated();
         return;
     }
 
@@ -1802,7 +1921,7 @@ bool Tracking::PredictStateIMU()
         return false;
     }
 
-    if(mbMapUpdated && mpLastKeyFrame)
+    if(mbMapUpdated && mpLastKeyFrame && mpImuPreintegratedFromLastKF)
     {
         const Eigen::Vector3f twb1 = mpLastKeyFrame->GetImuPosition();
         const Eigen::Matrix3f Rwb1 = mpLastKeyFrame->GetImuRotation();
@@ -1814,13 +1933,20 @@ bool Tracking::PredictStateIMU()
         Eigen::Matrix3f Rwb2 = IMU::NormalizeRotation(Rwb1 * mpImuPreintegratedFromLastKF->GetDeltaRotation(mpLastKeyFrame->GetImuBias()));
         Eigen::Vector3f twb2 = twb1 + Vwb1*t12 + 0.5f*t12*t12*Gz+ Rwb1*mpImuPreintegratedFromLastKF->GetDeltaPosition(mpLastKeyFrame->GetImuBias());
         Eigen::Vector3f Vwb2 = Vwb1 + t12*Gz + Rwb1 * mpImuPreintegratedFromLastKF->GetDeltaVelocity(mpLastKeyFrame->GetImuBias());
+
+        // ZUPT output hold: if stationary, prevent integration from accumulating
+        if(mCurrentFrame.IsStationary() && Vwb2.norm() < mZuptVelGate)
+        {
+            Vwb2.setZero();
+            twb2 = twb1;
+        }
         mCurrentFrame.SetImuPoseVelocity(Rwb2,twb2,Vwb2);
 
         mCurrentFrame.mImuBias = mpLastKeyFrame->GetImuBias();
         mCurrentFrame.mPredBias = mCurrentFrame.mImuBias;
         return true;
     }
-    else if(!mbMapUpdated)
+    else if(!mbMapUpdated && mCurrentFrame.mpImuPreintegratedFrame)
     {
         const Eigen::Vector3f twb1 = mLastFrame.GetImuPosition();
         const Eigen::Matrix3f Rwb1 = mLastFrame.GetImuRotation();
@@ -1832,6 +1958,13 @@ bool Tracking::PredictStateIMU()
         Eigen::Vector3f twb2 = twb1 + Vwb1*t12 + 0.5f*t12*t12*Gz+ Rwb1 * mCurrentFrame.mpImuPreintegratedFrame->GetDeltaPosition(mLastFrame.mImuBias);
         Eigen::Vector3f Vwb2 = Vwb1 + t12*Gz + Rwb1 * mCurrentFrame.mpImuPreintegratedFrame->GetDeltaVelocity(mLastFrame.mImuBias);
 
+        // ZUPT output hold: if stationary, prevent integration from accumulating
+        if(mCurrentFrame.IsStationary() && Vwb2.norm() < mZuptVelGate)
+        {
+            Vwb2.setZero();
+            twb2 = twb1;
+        }
+
         mCurrentFrame.SetImuPoseVelocity(Rwb2,twb2,Vwb2);
 
         mCurrentFrame.mImuBias = mLastFrame.mImuBias;
@@ -1842,6 +1975,98 @@ bool Tracking::PredictStateIMU()
         cout << "not IMU prediction!!" << endl;
 
     return false;
+}
+
+void Tracking::UpdateZuptState()
+{
+    mCurrentFrame.SetStationary(false);
+
+    if(!mbZuptEnabled)
+        return;
+
+    bool gyroMeanGate = false, accelNormGate = false;
+    double varG, varA;
+    {
+        unique_lock<mutex> lock(mMutexImuQueue);
+
+        const int n = (int)mlZuptImuWindow.size();
+        if(n < 2)
+            return;
+
+        // Variance of gyro and accel magnitudes over the sliding window
+        double sumG = 0.0, sumA = 0.0;
+        for(int i = 0; i < n; i++)
+        {
+            const IMU::Point &p = mlZuptImuWindow[i];
+            sumG += p.w.norm();
+            sumA += p.a.norm();
+        }
+        const double meanG = sumG / n;
+        const double meanA = sumA / n;
+
+        // Motion gates: sustained rotation or accel-magnitude far from gravity
+        // are strong evidence of motion even when the window variance stays low.
+        gyroMeanGate = (meanG > mZuptGyroMeanGate);
+        accelNormGate = (fabs(meanA - IMU::GRAVITY_VALUE) > mZuptAccelNormGate);
+
+        varG = 0.0;
+        varA = 0.0;
+        for(int i = 0; i < n; i++)
+        {
+            const IMU::Point &p = mlZuptImuWindow[i];
+            const double dG = p.w.norm() - meanG;
+            const double dA = p.a.norm() - meanA;
+            varG += dG * dG;
+            varA += dA * dA;
+        }
+        varG /= n;
+        varA /= n;
+    }
+
+    const bool belowTh = (varG < mZuptGyroVarTh) && (varA < mZuptAccelVarTh);
+    const bool forcedMotion = gyroMeanGate || accelNormGate;
+
+    if(mbZuptActive)
+    {
+        if(forcedMotion)
+        {
+            mbZuptActive = false;
+            mZuptExitCount = 0;
+            cout << "ZUPT: exiting stationary (motion gate) gyroM=" << gyroMeanGate << " accelN=" << accelNormGate << endl;
+        }
+        else if(belowTh || (varG < mZuptExitRatio * mZuptGyroVarTh && varA < mZuptExitRatio * mZuptAccelVarTh))
+        {
+            mZuptExitCount = 0;
+        }
+        else
+        {
+            mZuptExitCount++;
+            if(mZuptExitCount >= mZuptHystExit)
+            {
+                mbZuptActive = false;
+                mZuptExitCount = 0;
+            }
+        }
+    }
+    else
+    {
+        if(belowTh)
+        {
+            mZuptEnterCount++;
+            if(mZuptEnterCount >= mZuptHystEnter)
+            {
+                mbZuptActive = true;
+                mZuptEnterCount = 0;
+                cout << "ZUPT: entering stationary (gyroVar=" << varG << ", accelVar=" << varA << ")" << endl;
+            }
+        }
+        else
+        {
+            mZuptEnterCount = 0;
+        }
+    }
+
+    mCurrentFrame.SetStationary(mbZuptActive);
 }
 
 void Tracking::ResetFrameIMU()
@@ -1905,8 +2130,7 @@ void Tracking::Track()
                 }
                 else
                 {
-                    cout << "Timestamp jump detected, before IMU initialization. Reseting..." << endl;
-                    mpSystem->ResetActiveMap();
+                    cout << "Timestamp jump detected, before IMU initialization. Skipping frame (no reset)..." << endl;
                 }
                 return;
             }
@@ -1940,6 +2164,9 @@ void Tracking::Track()
 
     }
     mbCreatedMap = false;
+
+    if (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
+        UpdateZuptState();
 
     // Get Map Mutex -> Map cannot be changed
     unique_lock<mutex> lock(pCurrentMap->mMutexMapUpdate);

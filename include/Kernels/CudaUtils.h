@@ -35,6 +35,11 @@ class CudaUtils {
         static int ORBmatcher_HISTO_LENGTH;
         static float* d_mvScaleFactors;
         static bool cameraIsFisheye;
+        // Per-level FAST candidate capacity for the GPU corner buffers.
+        // Replaces the old pixel-count sizing (w*h per level), which over-allocated
+        // multiple GB per frame on 720p. Budget is derived from the feature count
+        // with generous headroom; the corner buffers are sized level*budget.
+        static int maxCandidatesPerLevel;
 };
 
 void checkCudaError(cudaError_t err, const char* msg);

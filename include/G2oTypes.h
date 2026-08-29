@@ -814,6 +814,30 @@ public:
 };
 
 
+// Prior for velocity (Zero Velocity Update, ZUPT)
+class EdgePriorVelocity : public g2o::BaseUnaryEdge<3,Eigen::Vector3d,VertexVelocity>
+{
+public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+    EdgePriorVelocity(){}
+
+    virtual bool read(std::istream& is){return false;}
+    virtual bool write(std::ostream& os) const{return false;}
+
+    void computeError(){
+        const VertexVelocity* VV = static_cast<const VertexVelocity*>(_vertices[0]);
+        _error = - VV->estimate().cast<double>();   // want estimate == 0
+    }
+    virtual void linearizeOplus();
+
+    Eigen::Matrix<double,3,3> GetHessian(){
+        linearizeOplus();
+        return _jacobianOplusXi.transpose()*information()*_jacobianOplusXi;
+    }
+};
+
+
 class Edge4DoF : public g2o::BaseBinaryEdge<6,Vector6d,VertexPose4DoF,VertexPose4DoF>
 {
 public:

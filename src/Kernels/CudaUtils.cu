@@ -13,6 +13,7 @@ int CudaUtils::ORBmatcher_TH_HIGH = 100;
 int CudaUtils::ORBmatcher_TH_LOW = 50;
 int CudaUtils::ORBmatcher_HISTO_LENGTH = 30;
 bool CudaUtils::cameraIsFisheye;
+int CudaUtils::maxCandidatesPerLevel = 16384;
 
 void checkCudaError(cudaError_t err, const char* msg) {
     if (err != cudaSuccess) {
@@ -29,6 +30,9 @@ void CudaUtils::loadSetting(int _nFeatures, int _nLevels, bool _isMonocular, flo
     nCols = _nCols;
     nRows = _nRows;
     cameraIsFisheye = _cameraIsFisheye;
+    // NOTE: maxCandidatesPerLevel is intentionally NOT recomputed here. It is
+    // set once in ORBextractor::allocMemory so the allocation size and the
+    // kernel stride always agree regardless of when loadSetting runs.
     std::vector<float> h_mvScaleFactors(nLevels);
     h_mvScaleFactors[0]=1.0f;
     for(int i=1; i<nLevels; i++)

@@ -42,6 +42,7 @@
 
 #include <mutex>
 #include <unordered_set>
+#include <deque>
 
 namespace ORB_SLAM3
 {
@@ -232,6 +233,9 @@ protected:
     // Reset IMU biases and compute frame velocity
     void ResetFrameIMU();
 
+    // ZUPT (Zero Velocity Update) support
+    void UpdateZuptState();
+
     bool mbMapUpdated;
 
     // Imu preintegration from last frame
@@ -324,6 +328,23 @@ protected:
     unsigned int mnLastRelocFrameId;
     double mTimeStampLost;
     double time_recently_lost;
+
+    // ZUPT (Zero Velocity Update) state
+    std::string mSettingsPath;
+    bool mbZuptEnabled;
+    double mZuptGyroVarTh;   // variance threshold on gyro magnitude (rad/s)^2
+    double mZuptAccelVarTh;  // variance threshold on accel magnitude (m/s^2)^2
+    int mZuptWindow;         // number of recent IMU samples kept for variance
+    int mZuptHystEnter;      // consecutive frames below th before declaring stationary
+    int mZuptHystExit;       // consecutive frames above (*ratio) before declaring motion
+    double mZuptExitRatio;   // multiplier on thresholds for exiting stationary
+    double mZuptGyroMeanGate;  // abs mean gyro magnitude above which motion is forced (rad/s)
+    double mZuptAccelNormGate; // |mean accel magnitude - g| above which motion is forced (m/s^2)
+    double mZuptVelGate;       // predicted velocity above which the ZUPT output hold is skipped (m/s)
+    bool mbZuptActive;       // current stationarity state
+    int mZuptEnterCount;
+    int mZuptExitCount;
+    std::deque<IMU::Point> mlZuptImuWindow;
 
     unsigned int mnFirstFrameId;
     unsigned int mnInitialFrameId;
