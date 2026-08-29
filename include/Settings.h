@@ -24,6 +24,7 @@
 // #define REGISTER_TIMES
 
 #include "CameraModels/GeometricCamera.h"
+#include "CalculationLogApi.h"
 
 #include <unistd.h>
 #include <stdio.h>
@@ -128,11 +129,11 @@ namespace ORB_SLAM3 {
             cv::FileNode node = fSettings[name];
             if(node.empty()){
                 if(required){
-                    std::cerr << name << " required parameter does not exist, aborting..." << std::endl;
+                    CalculationLog::missingParameter(name.c_str(), true);
                     exit(-1);
                 }
                 else{
-                    std::cerr << name << " optional parameter does not exist..." << std::endl;
+                    CalculationLog::missingParameter(name.c_str(), false);
                     found = false;
                     return T();
                 }

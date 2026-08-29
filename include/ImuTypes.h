@@ -30,6 +30,7 @@
 #include <mutex>
 
 #include "SerializationUtils.h"
+#include "CalculationLogApi.h"
 
 #include <boost/serialization/serialization.hpp>
 #include <boost/serialization/vector.hpp>
@@ -200,11 +201,9 @@ public:
     Bias GetUpdatedBias();
 
     void printMeasurements() const {
-        std::cout << "pint meas:\n";
         for(int i=0; i<mvMeasurements.size(); i++){
-            std::cout << "meas " << mvMeasurements[i].t << std::endl;
+            CalculationLog::imuMeasurementTimestamp(mvMeasurements[i].t);
         }
-        std::cout << "end pint meas:\n";
     }
 
 public:

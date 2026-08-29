@@ -15,6 +15,7 @@
 #include <opencv2/imgproc/imgproc.hpp>
 #include <vector>
 #include <iostream>
+#include <cstdlib>
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -27,6 +28,7 @@
 #include "descriptor.h"
 #include "Kernels/KernelController.h"
 #include "Kernels/CudaUtils.h"
+#include "CalculationLogger.h"
 
 #include "ORBextractor.h"
 
@@ -395,6 +397,10 @@ namespace ORB_SLAM3
             nfeatures(_nfeatures), scaleFactor(_scaleFactor), nlevels(_nlevels),
             iniThFAST(_iniThFAST), minThFAST(_minThFAST), imageWidth(_imageWidth), imageHeight(_imageHeight)
     {
+        FT_CALC_SCOPE();
+        FT_CALC_LOG("orb.extractor.construct features=%d scale=%f levels=%d fast_high=%d fast_low=%d image=%dx%d gpu=%d",
+                    _nfeatures, _scaleFactor, _nlevels, _iniThFAST, _minThFAST, _imageWidth,
+                    _imageHeight, KernelController::orbExtractionKernelRunStatus);
         mvScaleFactor.resize(nlevels);
         mvLevelSigma2.resize(nlevels);
         mvScaleFactor[0]=1.0f;
@@ -500,6 +506,7 @@ namespace ORB_SLAM3
 
     static void computeOrientation(const Mat& image, vector<KeyPoint>& keypoints, const vector<int>& umax)
     {
+        FT_CALC_SCOPE();
         for (vector<KeyPoint>::iterator keypoint = keypoints.begin(),
                      keypointEnd = keypoints.end(); keypoint != keypointEnd; ++keypoint)
         {
@@ -660,6 +667,7 @@ namespace ORB_SLAM3
     vector<cv::KeyPoint> ORBextractor::DistributeOctTree(const vector<cv::KeyPoint>& vToDistributeKeys, const int &minX,
                                                          const int &maxX, const int &minY, const int &maxY, const int &N, const int &level)
     {
+        FT_CALC_SCOPE();
         // Compute how many initial nodes
         const int nIni = round(static_cast<float>(maxX-minX)/(maxY-minY));
 
@@ -880,12 +888,16 @@ namespace ORB_SLAM3
             vResultKeys.push_back(*pKP);
         }
 
+        FT_CALC_LOG("orb.distribute.cpu level=%d input=%llu output=%llu iterations=%d", level,
+                    static_cast<unsigned long long>(vToDistributeKeys.size()),
+                    static_cast<unsigned long long>(vResultKeys.size()), iteration);
         return vResultKeys;
     }
 
     std::vector<OrbKeyPoint> ORBextractor::DistributeOctTreeGPU(const std::vector<OrbKeyPoint>& vToDistributeKeys, const int &minX,
                                                                 const int &maxX, const int &minY, const int &maxY, const int &N, const int &level)
     {
+        FT_CALC_SCOPE();
         // Compute how many initial nodes
         const int nIni = round(static_cast<float>(maxX-minX)/(maxY-minY));
         const float hX = static_cast<float>(maxX-minX)/nIni;
@@ -1106,11 +1118,15 @@ namespace ORB_SLAM3
             vResultKeys.push_back(*pKP);
         }
 
+        FT_CALC_LOG("orb.distribute.gpu level=%d input=%llu output=%llu iterations=%d", level,
+                    static_cast<unsigned long long>(vToDistributeKeys.size()),
+                    static_cast<unsigned long long>(vResultKeys.size()), iteration);
         return vResultKeys;
     }
 
     void ORBextractor::ComputeKeyPointsOctTree(vector<vector<KeyPoint> >& allKeypoints)
     {
+        FT_CALC_SCOPE();
         allKeypoints.resize(nlevels);
 
         const float W = 35;
@@ -1228,21 +1244,30 @@ namespace ORB_SLAM3
 
     void ORBextractor::ComputeKeyPointsOctTreeGPU(vector<vector<OrbKeyPoint> >& allKeypoints)
     {
+        FT_CALC_SCOPE();
         allKeypoints.resize(nlevels);
 
-        fast_extract(d_images, d_inputImage, iniThFAST, minThFAST, d_R, d_R_low, d_points, n_, d_corner_buffer, d_corner_size, cols, rows, imageStep, d_scaleFactor, nlevels, cudaStream, interComplete, this->mvImagePyramid[0]);
-        compute_orientation(d_images, d_inputImage, d_corner_buffer, this->d_corner_size, rows*cols, this->umax_gpu, imageStep, nlevels, cols, rows, d_scaleFactor, cudaStream);
+        const int cand_stride = CudaUtils::maxCandidatesPerLevel;
+
+        fast_extract(d_images, d_inputImage, iniThFAST, minThFAST, d_R, d_R_low, d_points, n_, d_corner_buffer, d_corner_size, cols, rows, imageStep, d_scaleFactor, nlevels, cudaStream, interComplete, this->mvImagePyramid[0], cand_stride);
+        compute_orientation(d_images, d_inputImage, d_corner_buffer, this->d_corner_size, cand_stride, this->umax_gpu, imageStep, nlevels, cols, rows, d_scaleFactor, cudaStream);
         cudaStreamWaitEvent(cudaStream, blurComplete, 0);
-        compute_descriptor(d_imagesBlured, d_inputImageBlured, d_corner_buffer, d_corner_size, rows*cols, d_pattern, imageStep, nlevels, cols, rows, d_scaleFactor, cudaStream);
+        compute_descriptor(d_imagesBlured, d_inputImageBlured, d_corner_buffer, d_corner_size, cand_stride, d_pattern, imageStep, nlevels, cols, rows, d_scaleFactor, cudaStream);
         uint corner_size[nlevels];
         cudaMemcpyAsync(corner_size, this->d_corner_size, sizeof(uint)*nlevels, cudaMemcpyDeviceToHost, cudaStream);
         cudaStreamSynchronize(cudaStream);
 
+
         for (int level = 0; level < nlevels; ++level){
             uint size = corner_size[level];
-            ORB_SLAM3::GpuPoint *corner_buffer = &(this->corner_buffer[level*rows*cols]);
-            ORB_SLAM3::GpuPoint *d_corner_buffer = &(this->d_corner_buffer[level*rows*cols]);
-            cudaMemcpyAsync(corner_buffer, d_corner_buffer, sizeof(GpuPoint)*size, cudaMemcpyDeviceToHost, cudaStream);
+            if (size > (uint)cand_stride) {
+                FT_CALC_LOG("orb.fast_candidate_buffer_saturated level=%d size=%u budget=%d", level, size, cand_stride);
+                size = (uint)cand_stride;
+            }
+            ORB_SLAM3::GpuPoint *corner_buffer = &(this->corner_buffer[level*cand_stride]);
+            ORB_SLAM3::GpuPoint *d_corner_buffer = &(this->d_corner_buffer[level*cand_stride]);
+
+
         }
         cudaStreamSynchronize(cudaStream);
 
@@ -1261,7 +1286,8 @@ namespace ORB_SLAM3
             const int maxBorderY = new_rows-EDGE_THRESHOLD+3;
 
             uint size = corner_size[level];
-            ORB_SLAM3::GpuPoint *corner_buffer = &(this->corner_buffer[level*rows*cols]);
+            if (size > (uint)cand_stride) size = (uint)cand_stride;
+            ORB_SLAM3::GpuPoint *corner_buffer = &(this->corner_buffer[level*cand_stride]);
 
             for(uint i=0; i<size; i++)
             {
@@ -1297,13 +1323,12 @@ namespace ORB_SLAM3
     }
 
     void ORBextractor::freeMemory() {
+        FT_CALC_SCOPE();
         checkCudaError(cudaFree(this->d_R), "[ORBextractor::] Failed to free d_R");
         checkCudaError(cudaFree(this->d_R_low), "[ORBextractor::] Failed to free d_R_low");
 
         checkCudaError(cudaFree(this->d_corner_buffer), "[ORBextractor::] Failed to free d_corner_buffer");
-        checkCudaError(cudaFreeHost(this->corner_buffer), "[ORBextractor::] Failed to free corner_buffer");
-        // checkCudaError(cudaFreeHost(this->score), "[ORBextractor::] Failed to free ");
-
+        std::free(this->corner_buffer);
         checkCudaError(cudaFree(d_images), "[ORBextractor::] Failed to free d_images");
         checkCudaError(cudaFree(d_imagesBlured), "[ORBextractor::] Failed to free d_imagesBlured");
         checkCudaError(cudaFreeHost(outputImages), "[ORBextractor::] Failed to free outputImages");
@@ -1312,17 +1337,32 @@ namespace ORB_SLAM3
     }
 
     void ORBextractor::freeInputMemory() {
+        FT_CALC_SCOPE();
         checkCudaError(cudaFree(d_inputImage),"[ORBextractor::] Failed to free d_inputImage");
         checkCudaError(cudaFree(d_inputImageBlured),"[ORBextractor::] Failed to free d_inputImageBlured");
         this->allocatedInputSize = 0;
     }
 
     void ORBextractor::allocMemory(int w, int h, int imageStep) {
+        FT_CALC_SCOPE();
+        // Single source of truth for the per-level FAST candidate capacity.
+        // MUST be a FIXED, instance-independent constant: ORB-SLAM3 creates a
+        // second ORBextractor (with 5*nfeatures) during map-init, and if this
+        // value depended on this->nfeatures it would be overwritten by that
+        // instance, causing the FIRST extractor's kernels to index its smaller
+        // corner buffer out of bounds. Keeping it fixed guarantees all instances
+        // agree on the per-level stride and capacity.
+        CudaUtils::maxCandidatesPerLevel = 200000;
         checkCudaError(cudaMalloc(&(this->d_R), sizeof(uint8_t)*w*h*this->nlevels), "[ORBextractor::] Failed to allocate memory for d_R");
         checkCudaError(cudaMalloc(&(this->d_R_low), sizeof(uint8_t)*w*h*this->nlevels), "[ORBextractor::] Failed to allocate memory for d_R_low");
 
-        checkCudaError(cudaMalloc(&(this->d_corner_buffer), sizeof(GpuPoint)*w*h*this->nlevels), "[ORBextractor::] Failed to allocate memory for d_corner_buffer");
-        checkCudaError(cudaMallocHost(&(this->corner_buffer), sizeof(GpuPoint)*w*h*this->nlevels), "[ORBextractor::] Failed to allocate memory for corner_buffer");
+        checkCudaError(cudaMalloc(&(this->d_corner_buffer), sizeof(GpuPoint)*CudaUtils::maxCandidatesPerLevel*this->nlevels), "[ORBextractor::] Failed to allocate memory for d_corner_buffer");
+        this->corner_buffer = (ORB_SLAM3::GpuPoint*)std::malloc(sizeof(GpuPoint)*CudaUtils::maxCandidatesPerLevel*this->nlevels);
+        if (this->corner_buffer == nullptr) {
+            FT_CALC_LOG("orb.memory.corner_buffer_allocation_failed bytes=%llu",
+                        static_cast<unsigned long long>(sizeof(GpuPoint)*CudaUtils::maxCandidatesPerLevel*this->nlevels));
+            throw std::bad_alloc();
+        }
         // checkCudaError(cudaMallocHost(&(this->score), sizeof(int)*w*h*this->nlevels), "[ORBextractor::] Failed to allocate memory for ");
 
         checkCudaError(cudaMalloc(&d_images, sizeof(uchar)*w*h*nlevels), "[ORBextractor::] Failed to allocate memory for d_images");
@@ -1340,6 +1380,7 @@ namespace ORB_SLAM3
     }
 
     inline void ORBextractor::checkAndReallocMemory(cv::Mat image) {
+        FT_CALC_SCOPE();
         //compute the max scaled image
         int new_cols = cvRound((float)image.cols*maxScaleFactor);
         int new_rows = cvRound((float)image.rows*maxScaleFactor);
@@ -1356,6 +1397,7 @@ namespace ORB_SLAM3
     int ORBextractor::operator()( InputArray _image, InputArray _mask, vector<KeyPoint>& _keypoints,
                                   OutputArray _descriptors, std::vector<int> &vLappingArea)
     {
+        FT_CALC_SCOPE();
         //cout << "[ORBextractor]: Max Features: " << nfeatures << endl;
         if(_image.empty())
             return -1;
@@ -1488,12 +1530,15 @@ namespace ORB_SLAM3
             }
         }
 
-        // cout << "[ORBextractor]: extracted " << _keypoints.size() << " KeyPoints" << endl;
+        FT_CALC_LOG("orb.extract.end image=%dx%d gpu=%d keypoints=%d mono=%d stereo=%d", image.cols,
+                    image.rows, KernelController::orbExtractionKernelRunStatus, nkeypoints,
+                    monoIndex, nkeypoints - monoIndex);
         return monoIndex;
     }
 
     void ORBextractor::ComputePyramid(cv::Mat image)
     {
+        FT_CALC_SCOPE();
         for (int level = 0; level < nlevels; ++level)
         {
             float scale = mvInvScaleFactor[level];
@@ -1521,6 +1566,9 @@ namespace ORB_SLAM3
 
     void ORBextractor::ComputePyramidGPU(cv::Mat image)
     {
+        FT_CALC_SCOPE();
+        FT_CALC_LOG("orb.pyramid.gpu.begin image=%dx%d step=%llu levels=%d", image.cols, image.rows,
+                    static_cast<unsigned long long>(image.step[0]), nlevels);
         checkCudaError(cudaMemcpyAsync(d_inputImage, image.data, sizeof(uchar)*image.rows*image.step[0], cudaMemcpyHostToDevice, cudaStream),"[ORBextractor::] Failed to copy d_inputImage");
         resize(image.rows, image.cols, d_scaleFactor, d_inputImage, d_images, nlevels, image.step[0], cudaStream);
         checkCudaError(cudaEventRecord(resizeComplete, cudaStream),"[ORBextractor::] Failed to record event resizeComplete");
@@ -1541,9 +1589,11 @@ namespace ORB_SLAM3
         checkCudaError(cudaLaunchHostFunc(cudaStreamCpy, copyPyramid, &(this->copyPyrimidData)),"[ORBextractor::] Failed to launch host cudaStreamCpy");
 
         mvImagePyramid[0] = image;
+        FT_CALC_LOG("orb.pyramid.gpu.enqueued levels=%d", nlevels);
     }
 
     ORBextractor::~ORBextractor() {
+        FT_CALC_SCOPE();
         if (KernelController::orbExtractionKernelRunStatus == 1) {
             this->freeMemory();
             this->freeInputMemory();

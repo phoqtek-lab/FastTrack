@@ -19,6 +19,7 @@
 #include "MapDrawer.h"
 #include "MapPoint.h"
 #include "KeyFrame.h"
+#include "CalculationLogger.h"
 #include <pangolin/pangolin.h>
 #include <mutex>
 
@@ -28,6 +29,7 @@ namespace ORB_SLAM3
 
 MapDrawer::MapDrawer(Atlas* pAtlas, const string &strSettingPath, Settings* settings):mpAtlas(pAtlas)
 {
+    FT_CALC_SCOPE();
     if(settings){
         newParameterLoader(settings);
     }
@@ -37,7 +39,7 @@ MapDrawer::MapDrawer(Atlas* pAtlas, const string &strSettingPath, Settings* sett
 
         if(!is_correct)
         {
-            std::cerr << "**ERROR in the config file, the format is not correct**" << std::endl;
+            FT_CALC_NOTICE("map_drawer.settings.invalid path=%s", strSettingPath.c_str());
             try
             {
                 throw -1;
@@ -51,16 +53,20 @@ MapDrawer::MapDrawer(Atlas* pAtlas, const string &strSettingPath, Settings* sett
 }
 
 void MapDrawer::newParameterLoader(Settings *settings) {
+    FT_CALC_SCOPE();
     mKeyFrameSize = settings->keyFrameSize();
     mKeyFrameLineWidth = settings->keyFrameLineWidth();
     mGraphLineWidth = settings->graphLineWidth();
     mPointSize = settings->pointSize();
     mCameraSize = settings->cameraSize();
     mCameraLineWidth  = settings->cameraLineWidth();
+    FT_CALC_LOG("map_drawer.settings.loaded keyframe_size=%f keyframe_line=%f graph_line=%f point_size=%f camera_size=%f camera_line=%f",
+                mKeyFrameSize, mKeyFrameLineWidth, mGraphLineWidth, mPointSize, mCameraSize, mCameraLineWidth);
 }
 
 bool MapDrawer::ParseViewerParamFile(cv::FileStorage &fSettings)
 {
+    FT_CALC_SCOPE();
     bool b_miss_params = false;
 
     cv::FileNode node = fSettings["Viewer.KeyFrameSize"];
@@ -70,7 +76,7 @@ bool MapDrawer::ParseViewerParamFile(cv::FileStorage &fSettings)
     }
     else
     {
-        std::cerr << "*Viewer.KeyFrameSize parameter doesn't exist or is not a real number*" << std::endl;
+        FT_CALC_NOTICE("map_drawer.parameter.missing name=Viewer.KeyFrameSize");
         b_miss_params = true;
     }
 
@@ -81,7 +87,7 @@ bool MapDrawer::ParseViewerParamFile(cv::FileStorage &fSettings)
     }
     else
     {
-        std::cerr << "*Viewer.KeyFrameLineWidth parameter doesn't exist or is not a real number*" << std::endl;
+        FT_CALC_NOTICE("map_drawer.parameter.missing name=Viewer.KeyFrameLineWidth");
         b_miss_params = true;
     }
 
@@ -92,7 +98,7 @@ bool MapDrawer::ParseViewerParamFile(cv::FileStorage &fSettings)
     }
     else
     {
-        std::cerr << "*Viewer.GraphLineWidth parameter doesn't exist or is not a real number*" << std::endl;
+        FT_CALC_NOTICE("map_drawer.parameter.missing name=Viewer.GraphLineWidth");
         b_miss_params = true;
     }
 
@@ -103,7 +109,7 @@ bool MapDrawer::ParseViewerParamFile(cv::FileStorage &fSettings)
     }
     else
     {
-        std::cerr << "*Viewer.PointSize parameter doesn't exist or is not a real number*" << std::endl;
+        FT_CALC_NOTICE("map_drawer.parameter.missing name=Viewer.PointSize");
         b_miss_params = true;
     }
 
@@ -114,7 +120,7 @@ bool MapDrawer::ParseViewerParamFile(cv::FileStorage &fSettings)
     }
     else
     {
-        std::cerr << "*Viewer.CameraSize parameter doesn't exist or is not a real number*" << std::endl;
+        FT_CALC_NOTICE("map_drawer.parameter.missing name=Viewer.CameraSize");
         b_miss_params = true;
     }
 
@@ -125,15 +131,17 @@ bool MapDrawer::ParseViewerParamFile(cv::FileStorage &fSettings)
     }
     else
     {
-        std::cerr << "*Viewer.CameraLineWidth parameter doesn't exist or is not a real number*" << std::endl;
+        FT_CALC_NOTICE("map_drawer.parameter.missing name=Viewer.CameraLineWidth");
         b_miss_params = true;
     }
 
+    FT_CALC_LOG("map_drawer.settings.parsed valid=%d", b_miss_params ? 0 : 1);
     return !b_miss_params;
 }
 
 void MapDrawer::DrawMapPoints()
 {
+    FT_CALC_SCOPE();
     Map* pActiveMap = mpAtlas->GetCurrentMap();
     if(!pActiveMap)
         return;
@@ -173,21 +181,25 @@ void MapDrawer::DrawMapPoints()
     }
 
     glEnd();
+    FT_CALC_LOG("map_drawer.points.drawn map=%llu points=%llu reference_points=%llu",
+                static_cast<unsigned long long>(pActiveMap->GetId()),
+                static_cast<unsigned long long>(vpMPs.size()),
+                static_cast<unsigned long long>(spRefMPs.size()));
 }
 
 void MapDrawer::DrawKeyFrames(const bool bDrawKF, const bool bDrawGraph, const bool bDrawInertialGraph, const bool bDrawOptLba)
 {
+    FT_CALC_SCOPE();
     const float &w = mKeyFrameSize;
     const float h = w*0.75;
     const float z = w*0.6;
 
     Map* pActiveMap = mpAtlas->GetCurrentMap();
+    if(!pActiveMap)
+        return;
     // DEBUG LBA
     std::set<long unsigned int> sOptKFs = pActiveMap->msOptKFs;
     std::set<long unsigned int> sFixedKFs = pActiveMap->msFixedKFs;
-
-    if(!pActiveMap)
-        return;
 
     const vector<KeyFrame*> vpKFs = pActiveMap->GetAllKeyFrames();
 
@@ -393,10 +405,16 @@ void MapDrawer::DrawKeyFrames(const bool bDrawKF, const bool bDrawGraph, const b
             }
         }
     }
+
+    FT_CALC_LOG("map_drawer.keyframes.drawn map=%llu keyframes=%llu keyframes_enabled=%d graph_enabled=%d inertial_graph_enabled=%d opt_enabled=%d",
+                static_cast<unsigned long long>(pActiveMap->GetId()),
+                static_cast<unsigned long long>(vpKFs.size()), bDrawKF ? 1 : 0,
+                bDrawGraph ? 1 : 0, bDrawInertialGraph ? 1 : 0, bDrawOptLba ? 1 : 0);
 }
 
 void MapDrawer::DrawCurrentCamera(pangolin::OpenGlMatrix &Twc)
 {
+    FT_CALC_SCOPE();
     const float &w = mCameraSize;
     const float h = w*0.75;
     const float z = w*0.6;
@@ -440,12 +458,14 @@ void MapDrawer::DrawCurrentCamera(pangolin::OpenGlMatrix &Twc)
 
 void MapDrawer::SetCurrentCameraPose(const Sophus::SE3f &Tcw)
 {
+    FT_CALC_SCOPE();
     unique_lock<mutex> lock(mMutexCamera);
     mCameraPose = Tcw.inverse();
 }
 
 void MapDrawer::GetCurrentOpenGLCameraMatrix(pangolin::OpenGlMatrix &M, pangolin::OpenGlMatrix &MOw)
 {
+    FT_CALC_SCOPE();
     Eigen::Matrix4f Twc;
     {
         unique_lock<mutex> lock(mMutexCamera);

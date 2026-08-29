@@ -9,10 +9,10 @@
 */
 
 #include <cuda.h>
-#include <iostream>
 
 #include "ORBextractor.h"
 
+#include "CalculationLogApi.h"
 #include "descriptor.h"
 
 // __device__ __constant__ int HALF_PATCH_SIZE_GPU;
@@ -56,7 +56,7 @@ __device__ inline void comp_descr(const uchar *image, ORB_SLAM3::GpuPoint &pt, c
 #undef GET_VALUE
     }    
 
-__global__ void compute_descriptor_kernel(uchar *images, uchar *inputImage, ORB_SLAM3::GpuPoint *pointsTotal, const uint *sizes, cv::Point* pattern, int inputImageStep, int maxLevel, const float *mvScaleFactor, int cols, int rows) {
+__global__ void compute_descriptor_kernel(uchar *images, uchar *inputImage, ORB_SLAM3::GpuPoint *pointsTotal, const uint *sizes, cv::Point* pattern, int inputImageStep, int maxLevel, const float *mvScaleFactor, int cols, int rows, int stride) {
     const int index = blockIdx.x * blockDim.x + threadIdx.x;
     const int level = blockIdx.y * blockDim.y + threadIdx.y;
     if (level >= maxLevel)
@@ -67,7 +67,7 @@ __global__ void compute_descriptor_kernel(uchar *images, uchar *inputImage, ORB_
         return;
     }
 
-    ORB_SLAM3::GpuPoint *points = &(pointsTotal[level*cols*rows]);
+    ORB_SLAM3::GpuPoint *points = &(pointsTotal[level*stride]);
 
     const uchar* im[2] = {inputImage, &(images[level*cols*rows])};
     const int imIndex = (level == 0) * 0 + (level != 0) * 1;
@@ -92,5 +92,8 @@ void compute_descriptor(uchar *images, uchar *inputImage, ORB_SLAM3::GpuPoint *p
     dim3 dg( ceil( (float)maxPointsLevel/128 ), ceil((float)maxLevel/8) );
     dim3 db( 128, 8 );
 
-    compute_descriptor_kernel<<<dg, db, 0, cudaStream>>>(images, inputImage, points, sizes, pattern, inputImageStep, maxLevel, mvScaleFactor, cols, rows);
+    ORB_SLAM3::CalculationLog::textf("cuda.descriptor.launch rows=%d cols=%d levels=%d max_points_level=%d image_step=%d grid=%ux%u block=%ux%u",
+                                     rows, cols, maxLevel, maxPointsLevel, inputImageStep, dg.x, dg.y, db.x, db.y);
+
+    compute_descriptor_kernel<<<dg, db, 0, cudaStream>>>(images, inputImage, points, sizes, pattern, inputImageStep, maxLevel, mvScaleFactor, cols, rows, maxPointsLevel);
 }

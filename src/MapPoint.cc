@@ -18,6 +18,7 @@
 
 #include "MapPoint.h"
 #include "ORBmatcher.h"
+#include "CalculationLogger.h"
 
 #include<mutex>
 
@@ -33,6 +34,7 @@ MapPoint::MapPoint():
     mnCorrectedReference(0), mnBAGlobalForKF(0), mnVisible(1), mnFound(1), mbBad(false),
     mpReplaced(static_cast<MapPoint*>(NULL))
 {
+    FT_CALC_SCOPE();
     mpReplaced = static_cast<MapPoint*>(NULL);
 }
 
@@ -43,6 +45,7 @@ MapPoint::MapPoint(const Eigen::Vector3f &Pos, KeyFrame *pRefKF, Map* pMap):
     mpReplaced(static_cast<MapPoint*>(NULL)), mfMinDistance(0), mfMaxDistance(0), mpMap(pMap),
     mnOriginMapId(pMap->GetId())
 {
+    FT_CALC_SCOPE();
     SetWorldPos(Pos);
 
     mNormalVector.setZero();
@@ -53,6 +56,9 @@ MapPoint::MapPoint(const Eigen::Vector3f &Pos, KeyFrame *pRefKF, Map* pMap):
     // MapPoints can be created from Tracking and Local Mapping. This mutex avoid conflicts with id.
     unique_lock<mutex> lock(mpMap->mMutexPointCreation);
     mnId=nNextId++;
+    FT_CALC_LOG("mappoint.construct id=%llu kind=world ref_kf=%llu map=%llu x=%f y=%f z=%f",
+                static_cast<unsigned long long>(mnId), static_cast<unsigned long long>(pRefKF->mnId),
+                static_cast<unsigned long long>(pMap->GetId()), Pos.x(), Pos.y(), Pos.z());
 }
 
 MapPoint::MapPoint(const double invDepth, cv::Point2f uv_init, KeyFrame* pRefKF, KeyFrame* pHostKF, Map* pMap):
@@ -62,6 +68,7 @@ MapPoint::MapPoint(const double invDepth, cv::Point2f uv_init, KeyFrame* pRefKF,
     mpReplaced(static_cast<MapPoint*>(NULL)), mfMinDistance(0), mfMaxDistance(0), mpMap(pMap),
     mnOriginMapId(pMap->GetId())
 {
+    FT_CALC_SCOPE();
     mInvDepth=invDepth;
     mInitU=(double)uv_init.x;
     mInitV=(double)uv_init.y;
@@ -73,6 +80,10 @@ MapPoint::MapPoint(const double invDepth, cv::Point2f uv_init, KeyFrame* pRefKF,
     // MapPoints can be created from Tracking and Local Mapping. This mutex avoid conflicts with id.
     unique_lock<mutex> lock(mpMap->mMutexPointCreation);
     mnId=nNextId++;
+    FT_CALC_LOG("mappoint.construct id=%llu kind=inverse_depth ref_kf=%llu host_kf=%llu map=%llu inv_depth=%f u=%f v=%f",
+                static_cast<unsigned long long>(mnId), static_cast<unsigned long long>(pRefKF->mnId),
+                static_cast<unsigned long long>(pHostKF->mnId), static_cast<unsigned long long>(pMap->GetId()),
+                invDepth, static_cast<float>(uv_init.x), static_cast<float>(uv_init.y));
 }
 
 MapPoint::MapPoint(const Eigen::Vector3f &Pos, Map* pMap, Frame* pFrame, const int &idxF):
@@ -81,6 +92,7 @@ MapPoint::MapPoint(const Eigen::Vector3f &Pos, Map* pMap, Frame* pFrame, const i
     mnCorrectedReference(0), mnBAGlobalForKF(0), mpRefKF(static_cast<KeyFrame*>(NULL)), mnVisible(1),
     mnFound(1), mbBad(false), mpReplaced(NULL), mpMap(pMap), mnOriginMapId(pMap->GetId())
 {
+    FT_CALC_SCOPE();
     SetWorldPos(Pos);
 
     Eigen::Vector3f Ow;
@@ -113,12 +125,17 @@ MapPoint::MapPoint(const Eigen::Vector3f &Pos, Map* pMap, Frame* pFrame, const i
     // MapPoints can be created from Tracking and Local Mapping. This mutex avoid conflicts with id.
     unique_lock<mutex> lock(mpMap->mMutexPointCreation);
     mnId=nNextId++;
+    FT_CALC_LOG("mappoint.construct id=%llu kind=frame map=%llu frame=%llu feature=%d x=%f y=%f z=%f",
+                static_cast<unsigned long long>(mnId), static_cast<unsigned long long>(pMap->GetId()),
+                static_cast<unsigned long long>(pFrame->mnId), idxF, Pos.x(), Pos.y(), Pos.z());
 }
 
 void MapPoint::SetWorldPos(const Eigen::Vector3f &Pos) {
+    FT_CALC_SCOPE();
     unique_lock<mutex> lock2(mGlobalMutex);
     unique_lock<mutex> lock(mMutexPos);
     mWorldPos = Pos;
+    FT_CALC_LOG("mappoint.position.set x=%f y=%f z=%f", Pos.x(), Pos.y(), Pos.z());
 }
 
 Eigen::Vector3f MapPoint::GetWorldPos() {
@@ -140,6 +157,7 @@ KeyFrame* MapPoint::GetReferenceKeyFrame()
 
 void MapPoint::AddObservation(KeyFrame* pKF, int idx)
 {
+    FT_CALC_SCOPE();
     unique_lock<mutex> lock(mMutexFeatures);
     tuple<int,int> indexes;
 
@@ -163,13 +181,18 @@ void MapPoint::AddObservation(KeyFrame* pKF, int idx)
         nObs+=2;
     else
         nObs++;
+    FT_CALC_LOG("mappoint.observation.add id=%llu kf=%llu index=%d observations=%d",
+                static_cast<unsigned long long>(mnId), static_cast<unsigned long long>(pKF->mnId), idx, nObs);
 }
 
 void MapPoint::EraseObservation(KeyFrame* pKF)
 {
+    FT_CALC_SCOPE();
     bool bBad=false;
+    int observations_count = 0;
     {
         unique_lock<mutex> lock(mMutexFeatures);
+        observations_count = nObs;
         if(mObservations.count(pKF))
         {
             tuple<int,int> indexes = mObservations[pKF];
@@ -193,11 +216,16 @@ void MapPoint::EraseObservation(KeyFrame* pKF)
             // If only 2 observations or less, discard point
             if(nObs<=2)
                 bBad=true;
+
+            observations_count = nObs;
         }
     }
 
     if(bBad)
         SetBadFlag();
+    FT_CALC_LOG("mappoint.observation.erase id=%llu kf=%llu bad=%d observations=%d",
+                static_cast<unsigned long long>(mnId), static_cast<unsigned long long>(pKF->mnId),
+                bBad ? 1 : 0, observations_count);
 }
 
 
@@ -215,6 +243,7 @@ int MapPoint::Observations()
 
 void MapPoint::SetBadFlag()
 {
+    FT_CALC_SCOPE();
     map<KeyFrame*, tuple<int,int>> obs;
     {
         unique_lock<mutex> lock1(mMutexFeatures);
@@ -236,6 +265,8 @@ void MapPoint::SetBadFlag()
     }
 
     mpMap->EraseMapPoint(this);
+    FT_CALC_LOG("mappoint.bad id=%llu observations_removed=%llu",
+                static_cast<unsigned long long>(mnId), static_cast<unsigned long long>(obs.size()));
 }
 
 MapPoint* MapPoint::GetReplaced()
@@ -247,8 +278,13 @@ MapPoint* MapPoint::GetReplaced()
 
 void MapPoint::Replace(MapPoint* pMP)
 {
+    FT_CALC_SCOPE();
     if(pMP->mnId==this->mnId)
+    {
+        FT_CALC_LOG("mappoint.replace.abort id=%llu reason=self",
+                    static_cast<unsigned long long>(mnId));
         return;
+    }
 
     int nvisible, nfound;
     map<KeyFrame*,tuple<int,int>> obs;
@@ -297,6 +333,9 @@ void MapPoint::Replace(MapPoint* pMP)
     pMP->ComputeDistinctiveDescriptors();
 
     mpMap->EraseMapPoint(this);
+    FT_CALC_LOG("mappoint.replace old_id=%llu new_id=%llu observations=%llu visible=%d found=%d",
+                static_cast<unsigned long long>(mnId), static_cast<unsigned long long>(pMP->mnId),
+                static_cast<unsigned long long>(obs.size()), nvisible, nfound);
 }
 
 bool MapPoint::isBad()
@@ -328,6 +367,7 @@ float MapPoint::GetFoundRatio()
 
 void MapPoint::ComputeDistinctiveDescriptors()
 {
+    FT_CALC_SCOPE();
     // Retrieve all observed descriptors
     vector<cv::Mat> vDescriptors;
 
@@ -336,12 +376,20 @@ void MapPoint::ComputeDistinctiveDescriptors()
     {
         unique_lock<mutex> lock1(mMutexFeatures);
         if(mbBad)
+        {
+            FT_CALC_LOG("mappoint.descriptor.abort id=%llu reason=bad",
+                        static_cast<unsigned long long>(mnId));
             return;
+        }
         observations=mObservations;
     }
 
     if(observations.empty())
+    {
+        FT_CALC_LOG("mappoint.descriptor.abort id=%llu reason=no_observations",
+                    static_cast<unsigned long long>(mnId));
         return;
+    }
 
     vDescriptors.reserve(observations.size());
 
@@ -363,7 +411,11 @@ void MapPoint::ComputeDistinctiveDescriptors()
     }
 
     if(vDescriptors.empty())
+    {
+        FT_CALC_LOG("mappoint.descriptor.abort id=%llu reason=no_descriptors observations=%llu",
+                    static_cast<unsigned long long>(mnId), static_cast<unsigned long long>(observations.size()));
         return;
+    }
 
     // Compute distances between them
     const size_t N = vDescriptors.size();
@@ -400,6 +452,8 @@ void MapPoint::ComputeDistinctiveDescriptors()
         unique_lock<mutex> lock(mMutexFeatures);
         mDescriptor = vDescriptors[BestIdx].clone();
     }
+    FT_CALC_LOG("mappoint.descriptor.updated id=%llu descriptors=%llu best=%d median=%d",
+                static_cast<unsigned long long>(mnId), static_cast<unsigned long long>(N), BestIdx, BestMedian);
 }
 
 cv::Mat MapPoint::GetDescriptor()
@@ -425,6 +479,7 @@ bool MapPoint::IsInKeyFrame(KeyFrame *pKF)
 
 void MapPoint::UpdateNormalAndDepth()
 {
+    FT_CALC_SCOPE();
     map<KeyFrame*,tuple<int,int>> observations;
     KeyFrame* pRefKF;
     Eigen::Vector3f Pos;
@@ -432,14 +487,22 @@ void MapPoint::UpdateNormalAndDepth()
         unique_lock<mutex> lock1(mMutexFeatures);
         unique_lock<mutex> lock2(mMutexPos);
         if(mbBad)
+        {
+            FT_CALC_LOG("mappoint.normal_depth.abort id=%llu reason=bad",
+                        static_cast<unsigned long long>(mnId));
             return;
+        }
         observations = mObservations;
         pRefKF = mpRefKF;
         Pos = mWorldPos;
     }
 
     if(observations.empty())
+    {
+        FT_CALC_LOG("mappoint.normal_depth.abort id=%llu reason=no_observations",
+                    static_cast<unsigned long long>(mnId));
         return;
+    }
 
     Eigen::Vector3f normal;
     normal.setZero();
@@ -485,12 +548,19 @@ void MapPoint::UpdateNormalAndDepth()
     const float levelScaleFactor =  pRefKF->mvScaleFactors[level];
     const int nLevels = pRefKF->mnScaleLevels;
 
+    float min_distance = 0.0f;
+    float max_distance = 0.0f;
     {
         unique_lock<mutex> lock3(mMutexPos);
         mfMaxDistance = dist*levelScaleFactor;
         mfMinDistance = mfMaxDistance/pRefKF->mvScaleFactors[nLevels-1];
         mNormalVector = normal/n;
+        min_distance = mfMinDistance;
+        max_distance = mfMaxDistance;
     }
+    FT_CALC_LOG("mappoint.normal_depth.updated id=%llu observations=%llu rays=%d distance=%f min=%f max=%f",
+                static_cast<unsigned long long>(mnId), static_cast<unsigned long long>(observations.size()), n,
+                dist, min_distance, max_distance);
 }
 
 void MapPoint::SetNormalVector(const Eigen::Vector3f& normal)
@@ -513,6 +583,7 @@ float MapPoint::GetMaxDistanceInvariance()
 
 int MapPoint::PredictScale(const float &currentDist, KeyFrame* pKF)
 {
+    FT_CALC_SCOPE();
     float ratio;
     {
         unique_lock<mutex> lock(mMutexPos);
@@ -525,11 +596,14 @@ int MapPoint::PredictScale(const float &currentDist, KeyFrame* pKF)
     else if(nScale>=pKF->mnScaleLevels)
         nScale = pKF->mnScaleLevels-1;
 
+    FT_CALC_LOG("mappoint.predict_scale id=%llu target=kf distance=%f ratio=%f scale=%d",
+                static_cast<unsigned long long>(mnId), currentDist, ratio, nScale);
     return nScale;
 }
 
 int MapPoint::PredictScale(const float &currentDist, Frame* pF)
 {
+    FT_CALC_SCOPE();
     float ratio;
     {
         unique_lock<mutex> lock(mMutexPos);
@@ -542,18 +616,25 @@ int MapPoint::PredictScale(const float &currentDist, Frame* pF)
     else if(nScale>=pF->mnScaleLevels)
         nScale = pF->mnScaleLevels-1;
 
+    FT_CALC_LOG("mappoint.predict_scale id=%llu target=frame distance=%f ratio=%f scale=%d",
+                static_cast<unsigned long long>(mnId), currentDist, ratio, nScale);
     return nScale;
 }
 
 void MapPoint::PrintObservations()
 {
-    cout << "MP_OBS: MP " << mnId << endl;
-    for(map<KeyFrame*,tuple<int,int>>::iterator mit=mObservations.begin(), mend=mObservations.end(); mit!=mend; mit++)
+    FT_CALC_SCOPE();
+    const map<KeyFrame*,tuple<int,int>> observations = GetObservations();
+    FT_CALC_LOG("mappoint.observations id=%llu count=%llu",
+                static_cast<unsigned long long>(mnId), static_cast<unsigned long long>(observations.size()));
+    for(map<KeyFrame*,tuple<int,int>>::const_iterator mit=observations.begin(), mend=observations.end(); mit!=mend; mit++)
     {
         KeyFrame* pKFi = mit->first;
         tuple<int,int> indexes = mit->second;
         int leftIndex = get<0>(indexes), rightIndex = get<1>(indexes);
-        cout << "--OBS in KF " << pKFi->mnId << " in map " << pKFi->GetMap()->GetId() << endl;
+        FT_CALC_LOG("mappoint.observation id=%llu kf=%llu map=%llu left=%d right=%d",
+                    static_cast<unsigned long long>(mnId), static_cast<unsigned long long>(pKFi->mnId),
+                    static_cast<unsigned long long>(pKFi->GetMap()->GetId()), leftIndex, rightIndex);
     }
 }
 
@@ -571,6 +652,7 @@ void MapPoint::UpdateMap(Map* pMap)
 
 void MapPoint::PreSave(set<KeyFrame*>& spKF,set<MapPoint*>& spMP)
 {
+    FT_CALC_SCOPE();
     mBackupReplacedId = -1;
     if(mpReplaced && spMP.find(mpReplaced) != spMP.end())
         mBackupReplacedId = mpReplaced->mnId;
@@ -601,10 +683,13 @@ void MapPoint::PreSave(set<KeyFrame*>& spKF,set<MapPoint*>& spMP)
 
 void MapPoint::PostLoad(map<long unsigned int, KeyFrame*>& mpKFid, map<long unsigned int, MapPoint*>& mpMPid)
 {
+    FT_CALC_SCOPE();
     mpRefKF = mpKFid[mBackupRefKFId];
     if(!mpRefKF)
     {
-        cout << "ERROR: MP without KF reference " << mBackupRefKFId << "; Num obs: " << nObs << endl;
+        FT_CALC_NOTICE("mappoint.load.missing_reference id=%llu reference=%llu observations=%d",
+                       static_cast<unsigned long long>(mnId),
+                       static_cast<unsigned long long>(mBackupRefKFId), nObs);
     }
     mpReplaced = static_cast<MapPoint*>(NULL);
     if(mBackupReplacedId>=0)

@@ -19,6 +19,7 @@
 #include "KeyFrame.h"
 #include "Converter.h"
 #include "ImuTypes.h"
+#include "CalculationLogger.h"
 #include<mutex>
 
 namespace ORB_SLAM3
@@ -39,7 +40,7 @@ KeyFrame::KeyFrame():
         mbToBeErased(false), mbBad(false), mHalfBaseline(0), mbCurrentPlaceRecognition(false), mnMergeCorrectedForKF(0),
         NLeft(0),NRight(0), mnNumberOfOpt(0), mbHasVelocity(false)
 {
-
+    FT_CALC_SCOPE();
 }
 
 KeyFrame::KeyFrame(Frame &F, Map *pMap, KeyFrameDatabase *pKFDB):
@@ -61,7 +62,11 @@ KeyFrame::KeyFrame(Frame &F, Map *pMap, KeyFrameDatabase *pKFDB):
     mvLeftToRightMatch(F.mvLeftToRightMatch),mvRightToLeftMatch(F.mvRightToLeftMatch), mTlr(F.GetRelativePoseTlr()),
     mvKeysRight(F.mvKeysRight), NLeft(F.Nleft), NRight(F.Nright), mTrl(F.GetRelativePoseTrl()), mnNumberOfOpt(0), mbHasVelocity(false)
 {
+    FT_CALC_SCOPE();
     mnId=nNextId++;
+    FT_CALC_LOG("keyframe.construct id=%llu frame=%llu map=%llu features=%d imu=%d",
+                static_cast<unsigned long long>(mnId), static_cast<unsigned long long>(mnFrameId),
+                static_cast<unsigned long long>(pMap->GetId()), N, bImu ? 1 : 0);
 
     mGrid.resize(mnGridCols);
     if(F.Nleft != -1)  mGridRight.resize(mnGridCols);
@@ -97,17 +102,23 @@ KeyFrame::KeyFrame(Frame &F, Map *pMap, KeyFrameDatabase *pKFDB):
 
 void KeyFrame::ComputeBoW()
 {
+    FT_CALC_SCOPE();
     if(mBowVec.empty() || mFeatVec.empty())
     {
         vector<cv::Mat> vCurrentDesc = Converter::toDescriptorVector(mDescriptors);
         // Feature vector associate features with nodes in the 4th level (from leaves up)
         // We assume the vocabulary tree has 6 levels, change the 4 otherwise
         mpORBvocabulary->transform(vCurrentDesc,mBowVec,mFeatVec,4);
+        FT_CALC_LOG("keyframe.bow.computed id=%llu features=%d words=%llu nodes=%llu",
+                    static_cast<unsigned long long>(mnId), N,
+                    static_cast<unsigned long long>(mBowVec.size()),
+                    static_cast<unsigned long long>(mFeatVec.size()));
     }
 }
 
 void KeyFrame::SetPose(const Sophus::SE3f &Tcw)
 {
+    FT_CALC_SCOPE();
     unique_lock<mutex> lock(mMutexPose);
 
     mTcw = Tcw;
@@ -123,6 +134,7 @@ void KeyFrame::SetPose(const Sophus::SE3f &Tcw)
 
 void KeyFrame::SetVelocity(const Eigen::Vector3f &Vw)
 {
+    FT_CALC_SCOPE();
     unique_lock<mutex> lock(mMutexPose);
     mVw = Vw;
     mbHasVelocity = true;
@@ -203,6 +215,7 @@ void KeyFrame::AddConnection(KeyFrame *pKF, const int &weight)
 
 void KeyFrame::UpdateBestCovisibles()
 {
+    FT_CALC_SCOPE();
     unique_lock<mutex> lock(mMutexConnections);
     vector<pair<int,KeyFrame*> > vPairs;
     vPairs.reserve(mConnectedKeyFrameWeights.size());
@@ -378,6 +391,7 @@ MapPoint* KeyFrame::GetMapPoint(const size_t &idx)
 
 void KeyFrame::UpdateConnections(bool upParent)
 {
+    FT_CALC_SCOPE();
     map<KeyFrame*,int> KFcounter;
 
     vector<MapPoint*> vpMP;
@@ -422,12 +436,8 @@ void KeyFrame::UpdateConnections(bool upParent)
 
     vector<pair<int,KeyFrame*> > vPairs;
     vPairs.reserve(KFcounter.size());
-    if(!upParent)
-        cout << "UPDATE_CONN: current KF " << mnId << endl;
     for(map<KeyFrame*,int>::iterator mit=KFcounter.begin(), mend=KFcounter.end(); mit!=mend; mit++)
     {
-        if(!upParent)
-            cout << "  UPDATE_CONN: KF " << mit->first->mnId << " ; num matches: " << mit->second << endl;
         if(mit->second>nmax)
         {
             nmax=mit->second;
@@ -445,6 +455,9 @@ void KeyFrame::UpdateConnections(bool upParent)
         vPairs.push_back(make_pair(nmax,pKFmax));
         pKFmax->AddConnection(this,nmax);
     }
+    FT_CALC_LOG("keyframe.connections.updated id=%llu candidates=%llu accepted=%llu parent_update=%d",
+                static_cast<unsigned long long>(mnId), static_cast<unsigned long long>(KFcounter.size()),
+                static_cast<unsigned long long>(vPairs.size()), upParent ? 1 : 0);
 
     sort(vPairs.begin(),vPairs.end());
     list<KeyFrame*> lKFs;
@@ -490,7 +503,8 @@ void KeyFrame::ChangeParent(KeyFrame *pKF)
     unique_lock<mutex> lockCon(mMutexConnections);
     if(pKF == this)
     {
-        cout << "ERROR: Change parent KF, the parent and child are the same KF" << endl;
+        FT_CALC_LOG("keyframe.parent_change.abort id=%llu reason=self_parent",
+                    static_cast<unsigned long long>(mnId));
         throw std::invalid_argument("The parent and child can not be the same");
     }
 
@@ -572,6 +586,7 @@ void KeyFrame::SetErase()
 
 void KeyFrame::SetBadFlag()
 {
+    FT_CALC_SCOPE();
     {
         unique_lock<mutex> lock(mMutexConnections);
         if(mnId==mpMap->GetInitKFid())
@@ -920,6 +935,7 @@ void KeyFrame::PreSave(set<KeyFrame*>& spKF,set<MapPoint*>& spMP, set<GeometricC
 }
 
 void KeyFrame::PostLoad(map<long unsigned int, KeyFrame*>& mpKFid, map<long unsigned int, MapPoint*>& mpMPid, map<unsigned int, GeometricCamera*>& mpCamId){
+    FT_CALC_SCOPE();
     // Rebuild the empty variables
 
     // Pose
@@ -980,7 +996,8 @@ void KeyFrame::PostLoad(map<long unsigned int, KeyFrame*>& mpKFid, map<long unsi
     }
     else
     {
-        cout << "ERROR: There is not a main camera in KF " << mnId << endl;
+        FT_CALC_NOTICE("keyframe.load.missing_camera id=%llu",
+                       static_cast<unsigned long long>(mnId));
     }
     if(mnBackupIdCamera2 >= 0)
     {
@@ -1010,6 +1027,7 @@ void KeyFrame::PostLoad(map<long unsigned int, KeyFrame*>& mpKFid, map<long unsi
 
 bool KeyFrame::ProjectPointDistort(MapPoint* pMP, cv::Point2f &kp, float &u, float &v)
 {
+    FT_CALC_SCOPE();
 
     // 3D in absolute coordinates
     Eigen::Vector3f P = pMP->GetWorldPos();
@@ -1023,7 +1041,8 @@ bool KeyFrame::ProjectPointDistort(MapPoint* pMP, cv::Point2f &kp, float &u, flo
     // Check positive depth
     if(PcZ<0.0f)
     {
-        cout << "Negative depth: " << PcZ << endl;
+        FT_CALC_LOG("keyframe.project_distort.reject id=%llu reason=negative_depth z=%f",
+                    static_cast<unsigned long long>(mnId), PcZ);
         return false;
     }
 
@@ -1073,6 +1092,7 @@ bool KeyFrame::ProjectPointDistort(MapPoint* pMP, cv::Point2f &kp, float &u, flo
 
 bool KeyFrame::ProjectPointUnDistort(MapPoint* pMP, cv::Point2f &kp, float &u, float &v)
 {
+    FT_CALC_SCOPE();
 
     // 3D in absolute coordinates
     Eigen::Vector3f P = pMP->GetWorldPos();
@@ -1086,7 +1106,8 @@ bool KeyFrame::ProjectPointUnDistort(MapPoint* pMP, cv::Point2f &kp, float &u, f
     // Check positive depth
     if(PcZ<0.0f)
     {
-        cout << "Negative depth: " << PcZ << endl;
+        FT_CALC_LOG("keyframe.project_undistort.reject id=%llu reason=negative_depth z=%f",
+                    static_cast<unsigned long long>(mnId), PcZ);
         return false;
     }
 

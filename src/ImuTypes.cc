@@ -20,6 +20,7 @@
 #include "Converter.h"
 
 #include "GeometricTools.h"
+#include "CalculationLogger.h"
 
 #include<iostream>
 
@@ -32,6 +33,7 @@ namespace IMU
 const float eps = 1e-4;
 
 Eigen::Matrix3f NormalizeRotation(const Eigen::Matrix3f &R){
+    FT_CALC_SCOPE();
     Eigen::JacobiSVD<Eigen::Matrix3f> svd(R, Eigen::ComputeFullU | Eigen::ComputeFullV);
     return svd.matrixU() * svd.matrixV().transpose();
 }
@@ -82,6 +84,7 @@ Eigen::Matrix3f InverseRightJacobianSO3(const Eigen::Vector3f &v)
 }
 
 IntegratedRotation::IntegratedRotation(const Eigen::Vector3f &angVel, const Bias &imuBias, const float &time) {
+    FT_CALC_SCOPE();
     const float x = (angVel(0)-imuBias.bwx)*time;
     const float y = (angVel(1)-imuBias.bwy)*time;
     const float z = (angVel(2)-imuBias.bwz)*time;
@@ -106,6 +109,7 @@ IntegratedRotation::IntegratedRotation(const Eigen::Vector3f &angVel, const Bias
 
 Preintegrated::Preintegrated(const Bias &b_, const Calib &calib)
 {
+    FT_CALC_SCOPE();
     Nga = calib.Cov;
     NgaWalk = calib.CovWalk;
     Initialize(b_);
@@ -117,11 +121,14 @@ Preintegrated::Preintegrated(Preintegrated* pImuPre): dT(pImuPre->dT),C(pImuPre-
     dP(pImuPre->dP), JRg(pImuPre->JRg), JVg(pImuPre->JVg), JVa(pImuPre->JVa), JPg(pImuPre->JPg), JPa(pImuPre->JPa),
     avgA(pImuPre->avgA), avgW(pImuPre->avgW), bu(pImuPre->bu), db(pImuPre->db), mvMeasurements(pImuPre->mvMeasurements)
 {
-
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("imu.preintegrated.copy dT=%f measurements=%llu", dT,
+                static_cast<unsigned long long>(mvMeasurements.size()));
 }
 
 void Preintegrated::CopyFrom(Preintegrated* pImuPre)
 {
+    FT_CALC_SCOPE();
     dT = pImuPre->dT;
     C = pImuPre->C;
     Info = pImuPre->Info;
@@ -146,6 +153,7 @@ void Preintegrated::CopyFrom(Preintegrated* pImuPre)
 
 void Preintegrated::Initialize(const Bias &b_)
 {
+    FT_CALC_SCOPE();
     dR.setIdentity();
     dV.setZero();
     dP.setZero();
@@ -167,15 +175,22 @@ void Preintegrated::Initialize(const Bias &b_)
 
 void Preintegrated::Reintegrate()
 {
+    FT_CALC_SCOPE();
     std::unique_lock<std::mutex> lock(mMutex);
     const std::vector<integrable> aux = mvMeasurements;
+    FT_CALC_LOG("imu.reintegrate.begin measurements=%llu", static_cast<unsigned long long>(aux.size()));
     Initialize(bu);
     for(size_t i=0;i<aux.size();i++)
         IntegrateNewMeasurement(aux[i].a,aux[i].w,aux[i].t);
+    FT_CALC_LOG("imu.reintegrate.end dT=%f", dT);
 }
 
 void Preintegrated::IntegrateNewMeasurement(const Eigen::Vector3f &acceleration, const Eigen::Vector3f &angVel, const float &dt)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("imu.integrate.begin dt=%f ax=%f ay=%f az=%f wx=%f wy=%f wz=%f dT_before=%f",
+                dt, acceleration.x(), acceleration.y(), acceleration.z(), angVel.x(), angVel.y(),
+                angVel.z(), dT);
     mvMeasurements.push_back(integrable(acceleration,angVel,dt));
 
     // Position is updated firstly, as it depends on previously computed velocity and rotation.
@@ -232,10 +247,14 @@ void Preintegrated::IntegrateNewMeasurement(const Eigen::Vector3f &acceleration,
 
     // Total integrated time
     dT += dt;
+    FT_CALC_LOG("imu.integrate.end dT=%f avg_ax=%f avg_ay=%f avg_az=%f avg_wx=%f avg_wy=%f avg_wz=%f dP_x=%f dP_y=%f dP_z=%f dV_x=%f dV_y=%f dV_z=%f",
+                dT, avgA.x(), avgA.y(), avgA.z(), avgW.x(), avgW.y(), avgW.z(), dP.x(), dP.y(),
+                dP.z(), dV.x(), dV.y(), dV.z());
 }
 
 void Preintegrated::MergePrevious(Preintegrated* pPrev)
 {
+    FT_CALC_SCOPE();
     if (pPrev==this)
         return;
 
@@ -251,6 +270,9 @@ void Preintegrated::MergePrevious(Preintegrated* pPrev)
 
     const std::vector<integrable > aux1 = pPrev->mvMeasurements;
     const std::vector<integrable> aux2 = mvMeasurements;
+    FT_CALC_LOG("imu.merge_previous first=%llu second=%llu",
+                static_cast<unsigned long long>(aux1.size()),
+                static_cast<unsigned long long>(aux2.size()));
 
     Initialize(bav);
     for(size_t i=0;i<aux1.size();i++)
@@ -258,10 +280,13 @@ void Preintegrated::MergePrevious(Preintegrated* pPrev)
     for(size_t i=0;i<aux2.size();i++)
         IntegrateNewMeasurement(aux2[i].a,aux2[i].w,aux2[i].t);
 
+    FT_CALC_LOG("imu.merge_previous.end dT=%f", dT);
+
 }
 
 void Preintegrated::SetNewBias(const Bias &bu_)
 {
+    FT_CALC_SCOPE();
     std::unique_lock<std::mutex> lock(mMutex);
     bu = bu_;
 
@@ -271,6 +296,8 @@ void Preintegrated::SetNewBias(const Bias &bu_)
     db(3) = bu_.bax-b.bax;
     db(4) = bu_.bay-b.bay;
     db(5) = bu_.baz-b.baz;
+    FT_CALC_LOG("imu.bias_update dbg_x=%f dbg_y=%f dbg_z=%f dba_x=%f dba_y=%f dba_z=%f",
+                db(0), db(1), db(2), db(3), db(4), db(5));
 }
 
 IMU::Bias Preintegrated::GetDeltaBias(const Bias &b_)

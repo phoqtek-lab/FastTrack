@@ -40,6 +40,7 @@
 #include<mutex>
 
 #include "OptimizableTypes.h"
+#include "CalculationLogger.h"
 
 
 namespace ORB_SLAM3
@@ -51,15 +52,26 @@ bool sortByVal(const pair<MapPoint*, int> &a, const pair<MapPoint*, int> &b)
 
 void Optimizer::GlobalBundleAdjustemnt(Map* pMap, int nIterations, bool* pbStopFlag, const unsigned long nLoopKF, const bool bRobust)
 {
+    FT_CALC_SCOPE();
     vector<KeyFrame*> vpKFs = pMap->GetAllKeyFrames();
     vector<MapPoint*> vpMP = pMap->GetAllMapPoints();
+    FT_CALC_LOG("optimizer.global_ba.begin map=%llu keyframes=%llu mappoints=%llu iterations=%d robust=%d",
+                static_cast<unsigned long long>(pMap->GetId()),
+                static_cast<unsigned long long>(vpKFs.size()),
+                static_cast<unsigned long long>(vpMP.size()), nIterations, bRobust ? 1 : 0);
     BundleAdjustment(vpKFs,vpMP,nIterations,pbStopFlag, nLoopKF, bRobust);
+    FT_CALC_LOG("optimizer.global_ba.end map=%llu", static_cast<unsigned long long>(pMap->GetId()));
 }
 
 
 void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<MapPoint *> &vpMP,
                                  int nIterations, bool* pbStopFlag, const unsigned long nLoopKF, const bool bRobust)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("optimizer.ba.begin keyframes=%llu mappoints=%llu iterations=%d loop_kf=%llu robust=%d",
+                static_cast<unsigned long long>(vpKFs.size()),
+                static_cast<unsigned long long>(vpMP.size()), nIterations,
+                static_cast<unsigned long long>(nLoopKF), bRobust ? 1 : 0);
     vector<bool> vbNotIncludedMP;
     vbNotIncludedMP.resize(vpMP.size());
 
@@ -277,7 +289,11 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
     // Optimize!
     optimizer.setVerbose(false);
     optimizer.initializeOptimization();
+    FT_CALC_LOG("optimizer.ba.graph edges=%llu vertices=%llu",
+                static_cast<unsigned long long>(optimizer.edges().size()),
+                static_cast<unsigned long long>(optimizer.vertices().size()));
     optimizer.optimize(nIterations);
+    FT_CALC_LOG("optimizer.ba.optimized iterations=%d", nIterations);
     Verbose::PrintMess("BA: End of the optimization", Verbose::VERBOSITY_NORMAL);
 
     // Recover optimized data
@@ -391,6 +407,10 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
 
 void Optimizer::FullInertialBA(Map *pMap, int its, const bool bFixLocal, const long unsigned int nLoopId, bool *pbStopFlag, bool bInit, float priorG, float priorA, Eigen::VectorXd *vSingVal, bool *bHess)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("optimizer.full_inertial_ba.begin map=%llu iterations=%d fix_local=%d loop_id=%llu init=%d",
+                static_cast<unsigned long long>(pMap->GetId()), its, bFixLocal ? 1 : 0,
+                static_cast<unsigned long long>(nLoopId), bInit ? 1 : 0);
     long unsigned int maxKFid = pMap->GetMaxKFid();
     const vector<KeyFrame*> vpKFs = pMap->GetAllKeyFrames();
     const vector<MapPoint*> vpMPs = pMap->GetAllMapPoints();
@@ -516,7 +536,10 @@ void Optimizer::FullInertialBA(Map *pMap, int its, const bool bFixLocal, const l
                 {
                     if(!VP1 || !VV1 || !VG1 || !VA1 || !VP2 || !VV2 || !VG2 || !VA2)
                     {
-                        cout << "Error" << VP1 << ", "<< VV1 << ", "<< VG1 << ", "<< VA1 << ", " << VP2 << ", " << VV2 <<  ", "<< VG2 << ", "<< VA2 <<endl;
+                        FT_CALC_NOTICE("optimizer.inertial_edge.abort mode=local missing=%d%d%d%d%d%d%d%d kf=%llu",
+                                       VP1 ? 0 : 1, VV1 ? 0 : 1, VG1 ? 0 : 1, VA1 ? 0 : 1,
+                                       VP2 ? 0 : 1, VV2 ? 0 : 1, VG2 ? 0 : 1, VA2 ? 0 : 1,
+                                       static_cast<unsigned long long>(pKFi->mnId));
                         continue;
                     }
                 }
@@ -524,7 +547,10 @@ void Optimizer::FullInertialBA(Map *pMap, int its, const bool bFixLocal, const l
                 {
                     if(!VP1 || !VV1 || !VG1 || !VA1 || !VP2 || !VV2)
                     {
-                        cout << "Error" << VP1 << ", "<< VV1 << ", "<< VG1 << ", "<< VA1 << ", " << VP2 << ", " << VV2 <<endl;
+                        FT_CALC_NOTICE("optimizer.inertial_edge.abort mode=local_init missing=%d%d%d%d%d%d kf=%llu",
+                                       VP1 ? 0 : 1, VV1 ? 0 : 1, VG1 ? 0 : 1, VA1 ? 0 : 1,
+                                       VP2 ? 0 : 1, VV2 ? 0 : 1,
+                                       static_cast<unsigned long long>(pKFi->mnId));
                         continue;
                     }
                 }
@@ -563,7 +589,9 @@ void Optimizer::FullInertialBA(Map *pMap, int its, const bool bFixLocal, const l
                 }
             }
             else
-                cout << pKFi->mnId << " or " << pKFi->mPrevKF->mnId << " no imu" << endl;
+                FT_CALC_NOTICE("optimizer.inertial_edge.skip kf=%llu prev_kf=%llu reason=no_imu",
+                               static_cast<unsigned long long>(pKFi->mnId),
+                               static_cast<unsigned long long>(pKFi->mPrevKF->mnId));
         }
     }
 
@@ -813,6 +841,9 @@ void Optimizer::FullInertialBA(Map *pMap, int its, const bool bFixLocal, const l
 
 int Optimizer::PoseOptimization(Frame *pFrame)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("optimizer.pose.begin frame=%llu features=%d",
+                static_cast<unsigned long long>(pFrame->mnId), pFrame->N);
     g2o::SparseOptimizer optimizer;
     g2o::BlockSolver_6_3::LinearSolverType * linearSolver;
 
@@ -994,7 +1025,10 @@ int Optimizer::PoseOptimization(Frame *pFrame)
     }
 
     if(nInitialCorrespondences<3)
+    {
+        FT_CALC_LOG("optimizer.pose.insufficient_correspondences initial=%d", nInitialCorrespondences);
         return 0;
+    }
 
     // We perform 4 optimizations, after each optimization we classify observation as inlier/outlier
     // At the next optimization, outliers are not included, but at the end they can be classified as inliers again.
@@ -1010,6 +1044,9 @@ int Optimizer::PoseOptimization(Frame *pFrame)
 
         optimizer.initializeOptimization(0);
         optimizer.optimize(its[it]);
+        FT_CALC_LOG("optimizer.pose.iteration index=%llu iterations=%d edges=%llu",
+                    static_cast<unsigned long long>(it), its[it],
+                    static_cast<unsigned long long>(optimizer.edges().size()));
 
         nBad=0;
         for(size_t i=0, iend=vpEdgesMono.size(); i<iend; i++)
@@ -1110,11 +1147,18 @@ int Optimizer::PoseOptimization(Frame *pFrame)
             SE3quat_recov.translation().cast<float>());
     pFrame->SetPose(pose);
 
-    return nInitialCorrespondences-nBad;
+    const int nInliers = nInitialCorrespondences-nBad;
+    FT_CALC_LOG("optimizer.pose.end initial=%d outliers=%d inliers=%d", nInitialCorrespondences,
+                nBad, nInliers);
+    return nInliers;
 }
 
 void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap, int& num_fixedKF, int& num_OptKF, int& num_MPs, int& num_edges)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("optimizer.local_ba.begin keyframe=%llu map=%llu",
+                static_cast<unsigned long long>(pKF->mnId),
+                static_cast<unsigned long long>(pMap->GetId()));
     // Local KeyFrames: First Breath Search from Current Keyframe
     list<KeyFrame*> lLocalKeyFrames;
 
@@ -1182,6 +1226,9 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
     if(num_fixedKF == 0)
     {
         Verbose::PrintMess("LM-LBA: There are 0 fixed KF in the optimizations, LBA aborted", Verbose::VERBOSITY_NORMAL);
+        FT_CALC_LOG("optimizer.local_ba.aborted fixed_keyframes=0 local_keyframes=%llu local_mappoints=%llu",
+                    static_cast<unsigned long long>(lLocalKeyFrames.size()),
+                    static_cast<unsigned long long>(lLocalMapPoints.size()));
         return;
     }
 
@@ -1503,6 +1550,12 @@ void Optimizer::OptimizeEssentialGraph(Map* pMap, KeyFrame* pLoopKF, KeyFrame* p
                                        const LoopClosing::KeyFrameAndPose &CorrectedSim3,
                                        const map<KeyFrame *, set<KeyFrame *> > &LoopConnections, const bool &bFixScale)
 {   
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("optimizer.essential_graph.begin map=%llu loop_kf=%llu current_kf=%llu corrected=%llu fixed_scale=%d",
+                static_cast<unsigned long long>(pMap->GetId()),
+                static_cast<unsigned long long>(pLoopKF->mnId),
+                static_cast<unsigned long long>(pCurKF->mnId),
+                static_cast<unsigned long long>(CorrectedSim3.size()), bFixScale ? 1 : 0);
     // Setup optimizer
     g2o::SparseOptimizer optimizer;
     optimizer.setVerbose(false);
@@ -1785,6 +1838,13 @@ void Optimizer::OptimizeEssentialGraph(Map* pMap, KeyFrame* pLoopKF, KeyFrame* p
 void Optimizer::OptimizeEssentialGraph(KeyFrame* pCurKF, vector<KeyFrame*> &vpFixedKFs, vector<KeyFrame*> &vpFixedCorrectedKFs,
                                        vector<KeyFrame*> &vpNonFixedKFs, vector<MapPoint*> &vpNonCorrectedMPs)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("optimizer.essential_graph_welding.begin current_kf=%llu fixed=%llu corrected_fixed=%llu non_fixed=%llu points=%llu",
+                static_cast<unsigned long long>(pCurKF->mnId),
+                static_cast<unsigned long long>(vpFixedKFs.size()),
+                static_cast<unsigned long long>(vpFixedCorrectedKFs.size()),
+                static_cast<unsigned long long>(vpNonFixedKFs.size()),
+                static_cast<unsigned long long>(vpNonCorrectedMPs.size()));
     Verbose::PrintMess("Opt_Essential: There are " + to_string(vpFixedKFs.size()) + " KFs fixed in the merged map", Verbose::VERBOSITY_DEBUG);
     Verbose::PrintMess("Opt_Essential: There are " + to_string(vpFixedCorrectedKFs.size()) + " KFs fixed in the old map", Verbose::VERBOSITY_DEBUG);
     Verbose::PrintMess("Opt_Essential: There are " + to_string(vpNonFixedKFs.size()) + " KFs non-fixed in the merged map", Verbose::VERBOSITY_DEBUG);
@@ -2106,7 +2166,8 @@ void Optimizer::OptimizeEssentialGraph(KeyFrame* pCurKF, vector<KeyFrame*> &vpFi
         }
         else
         {
-            cout << "ERROR: MapPoint has a reference KF from another map" << endl;
+            FT_CALC_NOTICE("optimizer.merge_point.skip mappoint=%llu reason=reference_kf_other_map",
+                           static_cast<unsigned long long>(pMPi->mnId));
         }
 
     }
@@ -2115,6 +2176,12 @@ void Optimizer::OptimizeEssentialGraph(KeyFrame* pCurKF, vector<KeyFrame*> &vpFi
 int Optimizer::OptimizeSim3(KeyFrame *pKF1, KeyFrame *pKF2, vector<MapPoint *> &vpMatches1, g2o::Sim3 &g2oS12, const float th2,
                             const bool bFixScale, Eigen::Matrix<double,7,7> &mAcumHessian, const bool bAllPoints)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("optimizer.sim3.begin kf1=%llu kf2=%llu matches=%llu threshold=%f fix_scale=%d all_points=%d",
+                static_cast<unsigned long long>(pKF1->mnId),
+                static_cast<unsigned long long>(pKF2->mnId),
+                static_cast<unsigned long long>(vpMatches1.size()), th2, bFixScale ? 1 : 0,
+                bAllPoints ? 1 : 0);
     g2o::SparseOptimizer optimizer;
     g2o::BlockSolverX::LinearSolverType * linearSolver;
 
@@ -2382,6 +2449,10 @@ int Optimizer::OptimizeSim3(KeyFrame *pKF1, KeyFrame *pKF2, vector<MapPoint *> &
 
 void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& num_fixedKF, int& num_OptKF, int& num_MPs, int& num_edges, bool bLarge, bool bRecInit)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("optimizer.local_inertial_ba.begin keyframe=%llu map=%llu large=%d recovering=%d",
+                static_cast<unsigned long long>(pKF->mnId),
+                static_cast<unsigned long long>(pMap->GetId()), bLarge ? 1 : 0, bRecInit ? 1 : 0);
     Map* pCurrentMap = pKF->GetMap();
 
     int maxOpt=10;
@@ -2599,7 +2670,8 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
 
         if(!pKFi->mPrevKF)
         {
-            cout << "NOT INERTIAL LINK TO PREVIOUS FRAME!!!!" << endl;
+            FT_CALC_NOTICE("optimizer.local_inertial_edge.skip kf=%llu reason=no_previous_kf",
+                           static_cast<unsigned long long>(pKFi->mnId));
             continue;
         }
         if(pKFi->bImu && pKFi->mPrevKF->bImu && pKFi->mpImuPreintegrated)
@@ -2616,7 +2688,10 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
 
             if(!VP1 || !VV1 || !VG1 || !VA1 || !VP2 || !VV2 || !VG2 || !VA2)
             {
-                cerr << "Error " << VP1 << ", "<< VV1 << ", "<< VG1 << ", "<< VA1 << ", " << VP2 << ", " << VV2 <<  ", "<< VG2 << ", "<< VA2 <<endl;
+                FT_CALC_NOTICE("optimizer.local_inertial_edge.abort kf=%llu missing=%d%d%d%d%d%d%d%d",
+                               static_cast<unsigned long long>(pKFi->mnId), VP1 ? 0 : 1, VV1 ? 0 : 1,
+                               VG1 ? 0 : 1, VA1 ? 0 : 1, VP2 ? 0 : 1, VV2 ? 0 : 1,
+                               VG2 ? 0 : 1, VA2 ? 0 : 1);
                 continue;
             }
 
@@ -2659,7 +2734,8 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
             optimizer.addEdge(vear[i]);
         }
         else
-            cout << "ERROR building inertial edge" << endl;
+            FT_CALC_NOTICE("optimizer.local_inertial_edge.skip kf=%llu reason=missing_preintegration_or_imu",
+                           static_cast<unsigned long long>(pKFi->mnId));
     }
 
     // Set MapPoint vertices
@@ -2890,7 +2966,8 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
     // TODO: Some convergence problems have been detected here
     if((2*err < err_end || isnan(err) || isnan(err_end)) && !bLarge) //bGN)
     {
-        cout << "FAIL LOCAL-INERTIAL BA!!!!" << endl;
+        FT_CALC_NOTICE("optimizer.local_inertial_ba.abort reason=non_convergent err=%f err_end=%f large=%d",
+                       err, err_end, bLarge ? 1 : 0);
         return;
     }
 
@@ -2959,6 +3036,8 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
 
 Eigen::MatrixXd Optimizer::Marginalize(const Eigen::MatrixXd &H, const int &start, const int &end)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("optimizer.marginalize.begin rows=%d cols=%d start=%d end=%d", H.rows(), H.cols(), start, end);
     // Goal
     // a  | ab | ac       a*  | 0 | ac*
     // ba | b  | bc  -->  0   | 0 | 0
@@ -3041,6 +3120,10 @@ Eigen::MatrixXd Optimizer::Marginalize(const Eigen::MatrixXd &H, const int &star
 
 void Optimizer::InertialOptimization(Map *pMap, Eigen::Matrix3d &Rwg, double &scale, Eigen::Vector3d &bg, Eigen::Vector3d &ba, bool bMono, Eigen::MatrixXd  &covInertial, bool bFixedVel, bool bGauss, float priorG, float priorA)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("optimizer.inertial.begin map=%llu monocular=%d fixed_velocity=%d gauss=%d prior_g=%f prior_a=%f",
+                static_cast<unsigned long long>(pMap->GetId()), bMono ? 1 : 0, bFixedVel ? 1 : 0,
+                bGauss ? 1 : 0, priorG, priorA);
     Verbose::PrintMess("inertial optimization", Verbose::VERBOSITY_NORMAL);
     int its = 200;
     long unsigned int maxKFid = pMap->GetMaxKFid();
@@ -3140,7 +3223,11 @@ void Optimizer::InertialOptimization(Map *pMap, Eigen::Matrix3d &Rwg, double &sc
             if(pKFi->isBad() || pKFi->mPrevKF->mnId>maxKFid)
                 continue;
             if(!pKFi->mpImuPreintegrated)
-                std::cout << "Not preintegrated measurement" << std::endl;
+            {
+                FT_CALC_NOTICE("optimizer.inertial_gs.skip kf=%llu reason=no_preintegrated_measurement",
+                               static_cast<unsigned long long>(pKFi->mnId));
+                continue;
+            }
 
             pKFi->mpImuPreintegrated->SetNewBias(pKFi->mPrevKF->GetImuBias());
             g2o::HyperGraph::Vertex* VP1 = optimizer.vertex(pKFi->mPrevKF->mnId);
@@ -3153,7 +3240,10 @@ void Optimizer::InertialOptimization(Map *pMap, Eigen::Matrix3d &Rwg, double &sc
             g2o::HyperGraph::Vertex* VS = optimizer.vertex(maxKFid*2+5);
             if(!VP1 || !VV1 || !VG || !VA || !VP2 || !VV2 || !VGDir || !VS)
             {
-                cout << "Error" << VP1 << ", "<< VV1 << ", "<< VG << ", "<< VA << ", " << VP2 << ", " << VV2 <<  ", "<< VGDir << ", "<< VS <<endl;
+                FT_CALC_NOTICE("optimizer.inertial_gs.abort kf=%llu missing=%d%d%d%d%d%d%d%d",
+                               static_cast<unsigned long long>(pKFi->mnId), VP1 ? 0 : 1, VV1 ? 0 : 1,
+                               VG ? 0 : 1, VA ? 0 : 1, VP2 ? 0 : 1, VV2 ? 0 : 1,
+                               VGDir ? 0 : 1, VS ? 0 : 1);
 
                 continue;
             }
@@ -3226,6 +3316,9 @@ void Optimizer::InertialOptimization(Map *pMap, Eigen::Matrix3d &Rwg, double &sc
 
 void Optimizer::InertialOptimization(Map *pMap, Eigen::Vector3d &bg, Eigen::Vector3d &ba, float priorG, float priorA)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("optimizer.inertial_bias.begin map=%llu prior_g=%f prior_a=%f",
+                static_cast<unsigned long long>(pMap->GetId()), priorG, priorA);
     int its = 200; // Check number of iterations
     long unsigned int maxKFid = pMap->GetMaxKFid();
     const vector<KeyFrame*> vpKFs = pMap->GetAllKeyFrames();
@@ -3324,7 +3417,10 @@ void Optimizer::InertialOptimization(Map *pMap, Eigen::Vector3d &bg, Eigen::Vect
             g2o::HyperGraph::Vertex* VS = optimizer.vertex(maxKFid*2+5);
             if(!VP1 || !VV1 || !VG || !VA || !VP2 || !VV2 || !VGDir || !VS)
             {
-                cout << "Error" << VP1 << ", "<< VV1 << ", "<< VG << ", "<< VA << ", " << VP2 << ", " << VV2 <<  ", "<< VGDir << ", "<< VS <<endl;
+                FT_CALC_NOTICE("optimizer.inertial_gs_merge.abort kf=%llu missing=%d%d%d%d%d%d%d%d",
+                               static_cast<unsigned long long>(pKFi->mnId), VP1 ? 0 : 1, VV1 ? 0 : 1,
+                               VG ? 0 : 1, VA ? 0 : 1, VP2 ? 0 : 1, VV2 ? 0 : 1,
+                               VGDir ? 0 : 1, VS ? 0 : 1);
 
                 continue;
             }
@@ -3388,6 +3484,8 @@ void Optimizer::InertialOptimization(Map *pMap, Eigen::Vector3d &bg, Eigen::Vect
 
 void Optimizer::InertialOptimization(Map *pMap, Eigen::Matrix3d &Rwg, double &scale)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("optimizer.inertial_scale.begin map=%llu", static_cast<unsigned long long>(pMap->GetId()));
     int its = 10;
     long unsigned int maxKFid = pMap->GetMaxKFid();
     const vector<KeyFrame*> vpKFs = pMap->GetAllKeyFrames();
@@ -3497,6 +3595,11 @@ void Optimizer::InertialOptimization(Map *pMap, Eigen::Matrix3d &Rwg, double &sc
 
 void Optimizer::LocalBundleAdjustment(KeyFrame* pMainKF,vector<KeyFrame*> vpAdjustKF, vector<KeyFrame*> vpFixedKF, bool *pbStopFlag)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("optimizer.welding_ba.begin main_kf=%llu adjustable=%llu fixed=%llu",
+                static_cast<unsigned long long>(pMainKF->mnId),
+                static_cast<unsigned long long>(vpAdjustKF.size()),
+                static_cast<unsigned long long>(vpFixedKF.size()));
     bool bShowImages = false;
 
     vector<MapPoint*> vpMPs;
@@ -3947,6 +4050,11 @@ void Optimizer::LocalBundleAdjustment(KeyFrame* pMainKF,vector<KeyFrame*> vpAdju
 
 void Optimizer::MergeInertialBA(KeyFrame* pCurrKF, KeyFrame* pMergeKF, bool *pbStopFlag, Map *pMap, LoopClosing::KeyFrameAndPose &corrPoses)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("optimizer.merge_inertial_ba.begin current=%llu merge=%llu map=%llu",
+                static_cast<unsigned long long>(pCurrKF->mnId),
+                static_cast<unsigned long long>(pMergeKF->mnId),
+                static_cast<unsigned long long>(pMap->GetId()));
     const int Nd = 6;
     const unsigned long maxKFid = pCurrKF->mnId;
 
@@ -4210,7 +4318,10 @@ void Optimizer::MergeInertialBA(KeyFrame* pCurrKF, KeyFrame* pMergeKF, bool *pbS
 
             if(!VP1 || !VV1 || !VG1 || !VA1 || !VP2 || !VV2 || !VG2 || !VA2)
             {
-                cerr << "Error " << VP1 << ", "<< VV1 << ", "<< VG1 << ", "<< VA1 << ", " << VP2 << ", " << VV2 <<  ", "<< VG2 << ", "<< VA2 <<endl;
+                FT_CALC_NOTICE("optimizer.merge_inertial_edge.abort kf=%llu missing=%d%d%d%d%d%d%d%d",
+                               static_cast<unsigned long long>(pKFi->mnId), VP1 ? 0 : 1, VV1 ? 0 : 1,
+                               VG1 ? 0 : 1, VA1 ? 0 : 1, VP2 ? 0 : 1, VV2 ? 0 : 1,
+                               VG2 ? 0 : 1, VA2 ? 0 : 1);
                 continue;
             }
 
@@ -4490,6 +4601,9 @@ void Optimizer::MergeInertialBA(KeyFrame* pCurrKF, KeyFrame* pMergeKF, bool *pbS
 
 int Optimizer::PoseInertialOptimizationLastKeyFrame(Frame *pFrame, bool bRecInit)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("optimizer.pose_inertial_last_kf.begin frame=%llu recovering=%d",
+                static_cast<unsigned long long>(pFrame->mnId), bRecInit ? 1 : 0);
     g2o::SparseOptimizer optimizer;
     g2o::BlockSolverX::LinearSolverType * linearSolver;
 
@@ -4874,6 +4988,9 @@ int Optimizer::PoseInertialOptimizationLastKeyFrame(Frame *pFrame, bool bRecInit
 
 int Optimizer::PoseInertialOptimizationLastFrame(Frame *pFrame, bool bRecInit)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("optimizer.pose_inertial_last_frame.begin frame=%llu recovering=%d",
+                static_cast<unsigned long long>(pFrame->mnId), bRecInit ? 1 : 0);
     g2o::SparseOptimizer optimizer;
     g2o::BlockSolverX::LinearSolverType * linearSolver;
 
@@ -5294,6 +5411,12 @@ void Optimizer::OptimizeEssentialGraph4DoF(Map* pMap, KeyFrame* pLoopKF, KeyFram
                                        const LoopClosing::KeyFrameAndPose &CorrectedSim3,
                                        const map<KeyFrame *, set<KeyFrame *> > &LoopConnections)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("optimizer.essential_graph_4dof.begin map=%llu loop_kf=%llu current_kf=%llu corrected=%llu",
+                static_cast<unsigned long long>(pMap->GetId()),
+                static_cast<unsigned long long>(pLoopKF->mnId),
+                static_cast<unsigned long long>(pCurKF->mnId),
+                static_cast<unsigned long long>(CorrectedSim3.size()));
     typedef g2o::BlockSolver< g2o::BlockSolverTraits<4, 4> > BlockSolver_4_4;
 
     // Setup optimizer

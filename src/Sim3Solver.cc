@@ -25,6 +25,7 @@
 
 #include "KeyFrame.h"
 #include "ORBmatcher.h"
+#include "CalculationLogger.h"
 
 #include "Thirdparty/DBoW2/DUtils/Random.h"
 
@@ -37,6 +38,10 @@ Sim3Solver::Sim3Solver(KeyFrame *pKF1, KeyFrame *pKF2, const vector<MapPoint *> 
     mnIterations(0), mnBestInliers(0), mbFixScale(bFixScale),
     pCamera1(pKF1->mpCamera), pCamera2(pKF2->mpCamera)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("sim3.construct kf1=%llu kf2=%llu matches=%llu fix_scale=%d",
+                static_cast<unsigned long long>(pKF1->mnId), static_cast<unsigned long long>(pKF2->mnId),
+                static_cast<unsigned long long>(vpMatched12.size()), bFixScale ? 1 : 0);
     bool bDifferentKFs = false;
     if(vpKeyFrameMatchedMP.empty())
     {
@@ -122,6 +127,7 @@ Sim3Solver::Sim3Solver(KeyFrame *pKF1, KeyFrame *pKF2, const vector<MapPoint *> 
 
 void Sim3Solver::SetRansacParameters(double probability, int minInliers, int maxIterations)
 {
+    FT_CALC_SCOPE();
     mRansacProb = probability;
     mRansacMinInliers = minInliers;
     mRansacMaxIts = maxIterations;    
@@ -144,10 +150,13 @@ void Sim3Solver::SetRansacParameters(double probability, int minInliers, int max
     mRansacMaxIts = max(1,min(nIterations,mRansacMaxIts));
 
     mnIterations = 0;
+    FT_CALC_LOG("sim3.ransac.parameters correspondences=%d min_inliers=%d max_iterations=%d probability=%f",
+                N, mRansacMinInliers, mRansacMaxIts, mRansacProb);
 }
 
 Eigen::Matrix4f Sim3Solver::iterate(int nIterations, bool &bNoMore, vector<bool> &vbInliers, int &nInliers)
 {
+    FT_CALC_SCOPE();
     bNoMore = false;
     vbInliers = vector<bool>(mN1,false);
     nInliers=0;
@@ -155,6 +164,8 @@ Eigen::Matrix4f Sim3Solver::iterate(int nIterations, bool &bNoMore, vector<bool>
     if(N<mRansacMinInliers)
     {
         bNoMore = true;
+        FT_CALC_NOTICE("sim3.iterate.reject reason=insufficient_correspondences correspondences=%d min_inliers=%d",
+                       N, mRansacMinInliers);
         return Eigen::Matrix4f::Identity();
     }
 
@@ -188,6 +199,8 @@ Eigen::Matrix4f Sim3Solver::iterate(int nIterations, bool &bNoMore, vector<bool>
         ComputeSim3(P3Dc1i,P3Dc2i);
 
         CheckInliers();
+        FT_CALC_LOG("sim3.ransac.iteration index=%d total=%d inliers=%d best_inliers=%d scale=%f",
+                    nCurrentIterations, mnIterations, mnInliersi, mnBestInliers, ms12i);
 
         if(mnInliersi>=mnBestInliers)
         {
@@ -204,6 +217,7 @@ Eigen::Matrix4f Sim3Solver::iterate(int nIterations, bool &bNoMore, vector<bool>
                 for(int i=0; i<N; i++)
                     if(mvbInliersi[i])
                         vbInliers[mvnIndices1[i]] = true;
+                FT_CALC_NOTICE("sim3.iterate.success inliers=%d total_iterations=%d", nInliers, mnIterations);
                 return mBestT12;
             }
         }
@@ -212,11 +226,14 @@ Eigen::Matrix4f Sim3Solver::iterate(int nIterations, bool &bNoMore, vector<bool>
     if(mnIterations>=mRansacMaxIts)
         bNoMore=true;
 
+    FT_CALC_LOG("sim3.iterate.end success=0 no_more=%d best_inliers=%d total_iterations=%d",
+                bNoMore ? 1 : 0, mnBestInliers, mnIterations);
     return Eigen::Matrix4f::Identity();
 }
 
 Eigen::Matrix4f Sim3Solver::iterate(int nIterations, bool &bNoMore, vector<bool> &vbInliers, int &nInliers, bool &bConverge)
 {
+    FT_CALC_SCOPE();
     bNoMore = false;
     bConverge = false;
     vbInliers = vector<bool>(mN1,false);
@@ -225,6 +242,8 @@ Eigen::Matrix4f Sim3Solver::iterate(int nIterations, bool &bNoMore, vector<bool>
     if(N<mRansacMinInliers)
     {
         bNoMore = true;
+        FT_CALC_NOTICE("sim3.iterate_convergent.reject reason=insufficient_correspondences correspondences=%d min_inliers=%d",
+                       N, mRansacMinInliers);
         return Eigen::Matrix4f::Identity();
     }
 
@@ -261,6 +280,8 @@ Eigen::Matrix4f Sim3Solver::iterate(int nIterations, bool &bNoMore, vector<bool>
         ComputeSim3(P3Dc1i,P3Dc2i);
 
         CheckInliers();
+        FT_CALC_LOG("sim3.ransac_convergent.iteration index=%d total=%d inliers=%d best_inliers=%d scale=%f",
+                    nCurrentIterations, mnIterations, mnInliersi, mnBestInliers, ms12i);
 
         if(mnInliersi>=mnBestInliers)
         {
@@ -278,6 +299,8 @@ Eigen::Matrix4f Sim3Solver::iterate(int nIterations, bool &bNoMore, vector<bool>
                     if(mvbInliersi[i])
                         vbInliers[mvnIndices1[i]] = true;
                 bConverge = true;
+                FT_CALC_NOTICE("sim3.iterate_convergent.success inliers=%d total_iterations=%d",
+                               nInliers, mnIterations);
                 return mBestT12;
             }
             else
@@ -290,17 +313,21 @@ Eigen::Matrix4f Sim3Solver::iterate(int nIterations, bool &bNoMore, vector<bool>
     if(mnIterations>=mRansacMaxIts)
         bNoMore=true;
 
+    FT_CALC_LOG("sim3.iterate_convergent.end success=%d no_more=%d converged=%d best_inliers=%d total_iterations=%d",
+                bConverge ? 1 : 0, bNoMore ? 1 : 0, bConverge ? 1 : 0, mnBestInliers, mnIterations);
     return bestSim3;
 }
 
 Eigen::Matrix4f Sim3Solver::find(vector<bool> &vbInliers12, int &nInliers)
 {
+    FT_CALC_SCOPE();
     bool bFlag;
     return iterate(mRansacMaxIts,bFlag,vbInliers12,nInliers);
 }
 
 void Sim3Solver::ComputeCentroid(Eigen::Matrix3f &P, Eigen::Matrix3f &Pr, Eigen::Vector3f &C)
 {
+    FT_CALC_SCOPE();
     C = P.rowwise().sum();
     C = C / P.cols();
     for(int i=0; i<P.cols(); i++)
@@ -310,6 +337,7 @@ void Sim3Solver::ComputeCentroid(Eigen::Matrix3f &P, Eigen::Matrix3f &Pr, Eigen:
 
 void Sim3Solver::ComputeSim3(Eigen::Matrix3f &P1, Eigen::Matrix3f &P2)
 {
+    FT_CALC_SCOPE();
     // Custom implementation of:
     // Horn 1987, Closed-form solution of absolute orientataion using unit quaternions
 
@@ -379,7 +407,8 @@ void Sim3Solver::ComputeSim3(Eigen::Matrix3f &P1, Eigen::Matrix3f &P2)
         double cvnom = Converter::toCvMat(Pr1).dot(Converter::toCvMat(P3));
         double nom = (Pr1.array() * P3.array()).sum();
         if (abs(nom-cvnom)>1e-3)
-            std::cout << "sim3 solver: " << abs(nom-cvnom) << std::endl << nom << std::endl;
+            FT_CALC_NOTICE("sim3.scale.numerator_mismatch difference=%f numerator=%f cv_numerator=%f",
+                           static_cast<float>(abs(nom-cvnom)), static_cast<float>(nom), static_cast<float>(cvnom));
         Eigen::Array<float,3,3> aux_P3;
         aux_P3 = P3.array() * P3.array();
         double den = aux_P3.sum();
@@ -416,6 +445,7 @@ void Sim3Solver::ComputeSim3(Eigen::Matrix3f &P1, Eigen::Matrix3f &P2)
 
 void Sim3Solver::CheckInliers()
 {
+    FT_CALC_SCOPE();
     vector<Eigen::Vector2f> vP1im2, vP2im1;
     Project(mvX3Dc2,vP2im1,mT12i,pCamera1);
     Project(mvX3Dc1,vP1im2,mT21i,pCamera2);
@@ -438,6 +468,7 @@ void Sim3Solver::CheckInliers()
         else
             mvbInliersi[i]=false;
     }
+    FT_CALC_LOG("sim3.check_inliers correspondences=%d inliers=%d", static_cast<int>(mvP1im1.size()), mnInliersi);
 }
 
 Eigen::Matrix4f Sim3Solver::GetEstimatedTransformation()
@@ -462,6 +493,8 @@ float Sim3Solver::GetEstimatedScale()
 
 void Sim3Solver::Project(const vector<Eigen::Vector3f> &vP3Dw, vector<Eigen::Vector2f> &vP2D, Eigen::Matrix4f Tcw, GeometricCamera* pCamera)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("sim3.project points=%d", static_cast<int>(vP3Dw.size()));
     Eigen::Matrix3f Rcw = Tcw.block<3,3>(0,0);
     Eigen::Vector3f tcw = Tcw.block<3,1>(0,3);
 
@@ -474,10 +507,13 @@ void Sim3Solver::Project(const vector<Eigen::Vector3f> &vP3Dw, vector<Eigen::Vec
         Eigen::Vector2f pt2D = pCamera->project(P3Dc);
         vP2D.push_back(pt2D);
     }
+    FT_CALC_LOG("sim3.project.end projected=%d", static_cast<int>(vP2D.size()));
 }
 
 void Sim3Solver::FromCameraToImage(const vector<Eigen::Vector3f> &vP3Dc, vector<Eigen::Vector2f> &vP2D, GeometricCamera* pCamera)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("sim3.project_camera_points points=%d", static_cast<int>(vP3Dc.size()));
     vP2D.clear();
     vP2D.reserve(vP3Dc.size());
 
@@ -486,6 +522,7 @@ void Sim3Solver::FromCameraToImage(const vector<Eigen::Vector3f> &vP3Dc, vector<
         Eigen::Vector2f pt2D = pCamera->project(vP3Dc[i]);
         vP2D.push_back(pt2D);
     }
+    FT_CALC_LOG("sim3.project_camera_points.end projected=%d", static_cast<int>(vP2D.size()));
 }
 
 } //namespace ORB_SLAM

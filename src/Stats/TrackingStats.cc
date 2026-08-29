@@ -1,14 +1,16 @@
 #include "Stats/TrackingStats.h"
+#include "CalculationLogger.h"
 #include <sstream>  
 
 using namespace std;
 
 void TrackingStats::saveStats(const string &file_path) {
 #ifdef REGISTER_STATS
+    FT_CALC_SCOPE();
     string data_path = file_path + "/data/";
-    cout << "Writing stats data into file: " << data_path << '\n';
+    FT_CALC_LOG("tracking_stats.save.begin path=%s", data_path.c_str());
     if (mkdir(data_path.c_str(), 0755) == -1) {
-        std::cerr << "[TrackingStats:] Error creating directory: " << strerror(errno) << std::endl;
+        FT_CALC_NOTICE("tracking_stats.directory.failed path=%s errno=%d", data_path.c_str(), errno);
     }
 
     KernelController::saveKernelsStats(data_path);
@@ -128,5 +130,6 @@ void TrackingStats::saveStats(const string &file_path) {
     myfile.open(data_path + "/num_frames_lost.txt");
     myfile << num_frames_lost << std::endl;
     myfile.close(); 
+    FT_CALC_LOG("tracking_stats.save.end path=%s frames_lost=%d", data_path.c_str(), num_frames_lost);
 #endif
 }

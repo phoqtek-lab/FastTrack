@@ -11,6 +11,7 @@
 #include <cuda.h>
 #include <opencv2/core/hal/interface.h>
 
+#include "CalculationLogApi.h"
 #include "gaussian_blur.h"
 #include "ORBextractor.h"
 
@@ -56,6 +57,9 @@ __global__ void gaussian_blur_kernel(uint old_h, uint old_w, float *_scaleFactor
 void gaussian_blur( uchar *images, uchar *inputImage, uchar *imagesBlured, uchar *inputImageBlured, float *kernel, int cols, int rows, int inputImageStep, float* mvScaleFactor, int maxLevel, cudaStream_t cudaStream) {
     dim3 dg( ceil( (float)cols/64 ), ceil( (float)rows/8 ), ceil( (float)maxLevel/1 ) );
     dim3 db( 64, 8, 1 );
+
+    ORB_SLAM3::CalculationLog::textf("cuda.gaussian_blur.launch rows=%d cols=%d levels=%d image_step=%d grid=%ux%ux%u block=%ux%ux%u",
+                                     rows, cols, maxLevel, inputImageStep, dg.x, dg.y, dg.z, db.x, db.y, db.z);
 
     gaussian_blur_kernel<<<dg, db, 0, cudaStream>>>(rows, cols, mvScaleFactor, inputImage, images, inputImageBlured, imagesBlured, kernel, maxLevel, inputImageStep);
 }
