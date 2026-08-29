@@ -18,21 +18,27 @@
 
 #include "Converter.h"
 
+#include "CalculationLogger.h"
+
 namespace ORB_SLAM3
 {
 
 std::vector<cv::Mat> Converter::toDescriptorVector(const cv::Mat &Descriptors)
 {
+    FT_CALC_SCOPE();
     std::vector<cv::Mat> vDesc;
     vDesc.reserve(Descriptors.rows);
     for (int j=0;j<Descriptors.rows;j++)
         vDesc.push_back(Descriptors.row(j));
 
+    FT_CALC_LOG("converter.descriptors rows=%d cols=%d output=%d", Descriptors.rows, Descriptors.cols,
+                static_cast<int>(vDesc.size()));
     return vDesc;
 }
 
 g2o::SE3Quat Converter::toSE3Quat(const cv::Mat &cvT)
 {
+    FT_CALC_SCOPE();
     Eigen::Matrix<double,3,3> R;
     R << cvT.at<float>(0,0), cvT.at<float>(0,1), cvT.at<float>(0,2),
          cvT.at<float>(1,0), cvT.at<float>(1,1), cvT.at<float>(1,2),
@@ -40,11 +46,15 @@ g2o::SE3Quat Converter::toSE3Quat(const cv::Mat &cvT)
 
     Eigen::Matrix<double,3,1> t(cvT.at<float>(0,3), cvT.at<float>(1,3), cvT.at<float>(2,3));
 
-    return g2o::SE3Quat(R,t);
+    const g2o::SE3Quat result(R,t);
+    FT_CALC_LOG("converter.se3_from_cv rows=%d cols=%d translation_norm=%f", cvT.rows, cvT.cols, t.norm());
+    return result;
 }
 
 g2o::SE3Quat Converter::toSE3Quat(const Sophus::SE3f &T)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("converter.se3_from_sophus translation_norm=%f", T.translation().norm());
     return g2o::SE3Quat(T.unit_quaternion().cast<double>(), T.translation().cast<double>());
 }
 
@@ -259,17 +269,22 @@ cv::Mat Converter::tocvSkewMatrix(const cv::Mat &v)
 
 bool Converter::isRotationMatrix(const cv::Mat &R)
 {
+    FT_CALC_SCOPE();
     cv::Mat Rt;
     cv::transpose(R, Rt);
     cv::Mat shouldBeIdentity = Rt * R;
     cv::Mat I = cv::Mat::eye(3,3, shouldBeIdentity.type());
 
-    return  cv::norm(I, shouldBeIdentity) < 1e-6;
+    const bool valid = cv::norm(I, shouldBeIdentity) < 1e-6;
+    FT_CALC_LOG("converter.rotation_check rows=%d cols=%d error=%f valid=%d", R.rows, R.cols,
+                cv::norm(I, shouldBeIdentity), valid ? 1 : 0);
+    return valid;
 
 }
 
 std::vector<float> Converter::toEuler(const cv::Mat &R)
 {
+    FT_CALC_SCOPE();
     assert(isRotationMatrix(R));
     float sy = sqrt(R.at<float>(0,0) * R.at<float>(0,0) +  R.at<float>(1,0) * R.at<float>(1,0) );
 
@@ -294,19 +309,26 @@ std::vector<float> Converter::toEuler(const cv::Mat &R)
     v_euler[1] = y;
     v_euler[2] = z;
 
+    FT_CALC_LOG("converter.euler singular=%d roll=%f pitch=%f yaw=%f", singular ? 1 : 0,
+                v_euler[0], v_euler[1], v_euler[2]);
     return v_euler;
 }
 
 Sophus::SE3<float> Converter::toSophus(const cv::Mat &T) {
+    FT_CALC_SCOPE();
     Eigen::Matrix<double,3,3> eigMat = toMatrix3d(T.rowRange(0,3).colRange(0,3));
     Eigen::Quaternionf q(eigMat.cast<float>());
 
     Eigen::Matrix<float,3,1> t = toVector3d(T.rowRange(0,3).col(3)).cast<float>();
 
+    FT_CALC_LOG("converter.sophus_from_cv translation_norm=%f", t.norm());
     return Sophus::SE3<float>(q,t);
 }
 
 Sophus::Sim3f Converter::toSophus(const g2o::Sim3& S) {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("converter.sim3_from_g2o scale=%f translation_norm=%f", static_cast<float>(S.scale()),
+                S.translation().norm());
     return Sophus::Sim3f(Sophus::RxSO3d((float)S.scale(), S.rotation().matrix()).cast<float>() ,
                          S.translation().cast<float>());
 }

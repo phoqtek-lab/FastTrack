@@ -1,4 +1,3 @@
-#include <iostream>
 #include <cmath>
 
 #include "Kernels/StereoMatchKernel.h"
@@ -354,6 +353,9 @@ void StereoMatchKernel::launch(std::vector<std::vector<int>> &vRowIndices, uchar
                                cv::Mat mDescriptors, cv::Mat mDescriptorsRight, 
                                const float minD, const float maxD, const int thOrbDist, const float mbf, const bool _mvImagePyramidOnGpu,
                                std::vector<std::pair<int, int>> &vDistIdx, std::vector<float> &mvuRight, std::vector<float> &mvDepth) {
+    ORB_SLAM3::CalculationLog::textf("cuda.stereo.launch.begin left_keypoints=%llu right_keypoints=%llu min_depth=%f max_depth=%f threshold=%d",
+                                     static_cast<unsigned long long>(mvKeys.size()),
+                                     static_cast<unsigned long long>(mvKeysRight.size()), minD, maxD, thOrbDist);
 
 #ifdef REGISTER_STATS
     std::chrono::steady_clock::time_point startTotal = std::chrono::steady_clock::now();
@@ -488,10 +490,13 @@ void StereoMatchKernel::launch(std::vector<std::vector<int>> &vRowIndices, uchar
 #endif
 
     frameCounter++;
+    ORB_SLAM3::CalculationLog::textf("cuda.stereo.launch.end matches=%llu",
+                                     static_cast<unsigned long long>(vDistIdx.size()));
 }
 
 // For fisheye
 void StereoMatchKernel::launch(const int N, const int Nr, cv::Mat mDescriptors, cv::Mat mDescriptorsRight, int *matches) {
+    ORB_SLAM3::CalculationLog::textf("cuda.stereo.fisheye.launch.begin left=%d right=%d", N, Nr);
 
 #ifdef REGISTER_STATS
     std::chrono::steady_clock::time_point startTotal = std::chrono::steady_clock::now();
@@ -544,9 +549,11 @@ void StereoMatchKernel::launch(const int N, const int Nr, cv::Mat mDescriptors, 
 #endif
 
     frameCounter++;
+    ORB_SLAM3::CalculationLog::text("cuda.stereo.fisheye.launch.end");
 }
 
 void StereoMatchKernel::initialize() {
+    ORB_SLAM3::CalculationLog::text("cuda.stereo.initialize.begin");
     
     if (memory_is_initialized)
         return;
@@ -579,9 +586,11 @@ void StereoMatchKernel::initialize() {
     }
 
     memory_is_initialized = true;
+    ORB_SLAM3::CalculationLog::text("cuda.stereo.initialize.end");
 }
 
 void StereoMatchKernel::shutdown() {
+    ORB_SLAM3::CalculationLog::text("cuda.stereo.shutdown.begin");
     if (memory_is_initialized) {
         if (CudaUtils::cameraIsFisheye) {
             cudaFree(d_descriptorsAll);
@@ -604,6 +613,7 @@ void StereoMatchKernel::shutdown() {
             }
         }
     }
+    ORB_SLAM3::CalculationLog::text("cuda.stereo.shutdown.end");
 }
 
 std::vector<std::pair<int, int>> StereoMatchKernel::convertToVectorOfPairs(int* X, int N) {
@@ -636,9 +646,10 @@ void StereoMatchKernel::flattenPyramid(std::vector<cv::Mat>& mvImagePyramid, int
 void StereoMatchKernel::saveStats(const std::string &file_path){
 
     std::string data_path = file_path + "/StereoMatchKernel/";
-    std::cout << "[StereoMatchKernel:] writing stats data into file: " << data_path << '\n';
+    ORB_SLAM3::CalculationLog::textf("cuda.stereo.stats.save path=%s", data_path.c_str());
     if (mkdir(data_path.c_str(), 0755) == -1) {
-        std::cerr << "[StereoMatchKernel:] Error creating directory: " << strerror(errno) << std::endl;
+        ORB_SLAM3::CalculationLog::textf("cuda.stereo.stats.directory_failed path=%s errno=%d",
+                                         data_path.c_str(), errno);
     }
     std::ofstream myfile;
     

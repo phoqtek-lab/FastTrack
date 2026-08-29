@@ -5,6 +5,7 @@
 
 
 void SearchLocalPointsKernel::initialize() {
+    ORB_SLAM3::CalculationLog::text("cuda.search_local.initialize.begin");
     if (memory_is_initialized) {
         return;
     }
@@ -62,6 +63,7 @@ void SearchLocalPointsKernel::initialize() {
     checkCudaError(cudaMalloc((void**)&d_bestIdxR, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for d_bestIdxR");  
 
     memory_is_initialized = true;
+    ORB_SLAM3::CalculationLog::text("cuda.search_local.initialize.end");
 }
 
 void SearchLocalPointsKernel::setFrame(DATA_WRAPPER::CudaFrame* cudaFrame) {
@@ -346,6 +348,10 @@ __global__ void searchByProjectionKernel(DATA_WRAPPER::CudaFrame* d_frame,
 void SearchLocalPointsKernel::launch(ORB_SLAM3::Frame &F, const vector<ORB_SLAM3::MapPoint*> &vmp, const float th, const bool bFarPoints, const float thFarPoints,
                         int* h_bestLevel, int* h_bestLevel2, int* h_bestDist, int* h_bestDist2, int* h_bestIdx,
                         int* h_bestLevelR, int* h_bestLevelR2, int* h_bestDistR, int* h_bestDistR2, int* h_bestIdxR){
+    ORB_SLAM3::CalculationLog::textf("cuda.search_local.launch.begin frame=%llu points=%llu threshold=%f far_points=%d far_threshold=%f",
+                                     static_cast<unsigned long long>(F.mnId),
+                                     static_cast<unsigned long long>(vmp.size()), th,
+                                     bFarPoints ? 1 : 0, thFarPoints);
 
 #ifdef REGISTER_STATS
     std::chrono::steady_clock::time_point startTotal = std::chrono::steady_clock::now();
@@ -357,7 +363,8 @@ void SearchLocalPointsKernel::launch(ORB_SLAM3::Frame &F, const vector<ORB_SLAM3
 
     int numPoints = vmp.size();
     if(numPoints > MAX_NUM_MAPPOINTS) {
-        cout << "[ERROR] SearchLocalPointsKernel::launchKernel: ] number of mappoints: " << numPoints << " is greater than MAX_NUM_MAPPOINTS: " << MAX_NUM_MAPPOINTS << "\n";
+        ORB_SLAM3::CalculationLog::textf("cuda.search_local.launch.abort points=%d max_points=%d",
+                                         numPoints, MAX_NUM_MAPPOINTS);
         raise(SIGSEGV);
     }
 
@@ -478,6 +485,7 @@ void SearchLocalPointsKernel::launch(ORB_SLAM3::Frame &F, const vector<ORB_SLAM3
 }
 
 void SearchLocalPointsKernel::shutdown(){
+    ORB_SLAM3::CalculationLog::text("cuda.search_local.shutdown.begin");
     if (!memory_is_initialized) 
         return;
     cudaFree(d_frame);
@@ -516,14 +524,16 @@ void SearchLocalPointsKernel::shutdown(){
     cudaFree(d_bestDist);
     cudaFree(d_bestDist2);
     cudaFree(d_bestIdx);
+    ORB_SLAM3::CalculationLog::text("cuda.search_local.shutdown.end");
 }
 
 void SearchLocalPointsKernel::saveStats(const string &file_path){
 
     string data_path = file_path + "/SearchLocalPointsKernel/";
-    cout << "[SeachLocalPointsKernel:] writing stats data into file: " << data_path << '\n';
+    ORB_SLAM3::CalculationLog::textf("cuda.search_local.stats.save path=%s", data_path.c_str());
     if (mkdir(data_path.c_str(), 0755) == -1) {
-        std::cerr << "[SearchLocalPointsKernel:] Error creating directory: " << strerror(errno) << std::endl;
+        ORB_SLAM3::CalculationLog::textf("cuda.search_local.stats.directory_failed path=%s errno=%d",
+                                         data_path.c_str(), errno);
     }
 
     ofstream myfile;

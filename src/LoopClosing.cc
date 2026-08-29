@@ -24,6 +24,7 @@
 #include "Optimizer.h"
 #include "ORBmatcher.h"
 #include "G2oTypes.h"
+#include "CalculationLogger.h"
 
 #include<mutex>
 #include<thread>
@@ -89,6 +90,9 @@ void LoopClosing::SetLocalMapper(LocalMapping *pLocalMapper)
 
 void LoopClosing::Run()
 {
+    CalculationLog::preallocate();
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("loop_closing.worker.start active=%d fix_scale=%d", mbActiveLC ? 1 : 0, mbFixScale ? 1 : 0);
     mbFinished =false;
 
     while(1)
@@ -100,6 +104,7 @@ void LoopClosing::Run()
 
         if(CheckNewKeyFrames())
         {
+            FT_CALC_LOG("loop_closing.cycle.begin queue=1");
             if(mpLastCurrentKF)
             {
                 mpLastCurrentKF->mvpLoopCandKFs.clear();
@@ -124,7 +129,7 @@ void LoopClosing::Run()
                     if ((mpTracker->mSensor==System::IMU_MONOCULAR || mpTracker->mSensor==System::IMU_STEREO || mpTracker->mSensor==System::IMU_RGBD) &&
                         (!mpCurrentKF->GetMap()->isImuInitialized()))
                     {
-                        cout << "IMU is not initilized, merge is aborted" << endl;
+                        FT_CALC_LOG("loop_closing.merge.abort reason=imu_not_initialized");
                     }
                     else
                     {
@@ -140,7 +145,7 @@ void LoopClosing::Run()
 
                         if(mpCurrentKF->GetMap()->IsInertial() && mpMergeMatchedKF->GetMap()->IsInertial())
                         {
-                            cout << "Merge check transformation with IMU" << endl;
+                            FT_CALC_LOG("loop_closing.merge.imu_check scale=%f", mSold_new.scale());
                             if(mSold_new.scale()<0.90||mSold_new.scale()>1.1){
                                 mpMergeLastCurrentKF->SetErase();
                                 mpMergeMatchedKF->SetErase();
@@ -236,7 +241,8 @@ void LoopClosing::Run()
                         g2o::Sim3 g2oSww_new = g2oTwc*mg2oLoopScw;
 
                         Eigen::Vector3d phi = LogSO3(g2oSww_new.rotation().toRotationMatrix());
-                        cout << "phi = " << phi.transpose() << endl; 
+                        FT_CALC_LOG("loop_closing.loop.rotation_error rx=%f ry=%f rz=%f",
+                                    phi(0), phi(1), phi(2));
                         if (fabs(phi(0))<0.008f && fabs(phi(1))<0.008f && fabs(phi(2))<0.349f)
                         {
                             if(mpCurrentKF->GetMap()->IsInertial())
@@ -255,7 +261,7 @@ void LoopClosing::Run()
                         }
                         else
                         {
-                            cout << "BAD LOOP!!!" << endl;
+                            FT_CALC_LOG("loop_closing.loop.abort reason=rotation_error");
                             bGoodLoop = false;
                         }
 
@@ -306,10 +312,12 @@ void LoopClosing::Run()
     }
 
     SetFinish();
+    FT_CALC_LOG("loop_closing.worker.end");
 }
 
 void LoopClosing::InsertKeyFrame(KeyFrame *pKF)
 {
+    FT_CALC_LOG("loop_closing.keyframe.enqueue id=%llu", static_cast<unsigned long long>(pKF->mnId));
     unique_lock<mutex> lock(mMutexLoopQueue);
     if(pKF->mnId!=0)
         mlpLoopKeyFrameQueue.push_back(pKF);
@@ -323,6 +331,7 @@ bool LoopClosing::CheckNewKeyFrames()
 
 bool LoopClosing::NewDetectCommonRegions()
 {
+    FT_CALC_SCOPE();
     // To deactivate placerecognition. No loopclosing nor merging will be performed
     if(!mbActiveLC)
         return false;
@@ -398,7 +407,7 @@ bool LoopClosing::NewDetectCommonRegions()
 
             if(!mbLoopDetected)
             {
-                cout << "PR: Loop detected with Reffine Sim3" << endl;
+                FT_CALC_LOG("loop_closing.loop.candidate refined_sim3 coincidences=%d", mnLoopNumCoincidences);
             }
         }
         else
@@ -535,6 +544,7 @@ bool LoopClosing::NewDetectCommonRegions()
 bool LoopClosing::DetectAndReffineSim3FromLastKF(KeyFrame* pCurrentKF, KeyFrame* pMatchedKF, g2o::Sim3 &gScw, int &nNumProjMatches,
                                                  std::vector<MapPoint*> &vpMPs, std::vector<MapPoint*> &vpMatchedMPs)
 {
+    FT_CALC_SCOPE();
     set<MapPoint*> spAlreadyMatchedMPs;
     nNumProjMatches = FindMatchesByProjection(pCurrentKF, pMatchedKF, gScw, spAlreadyMatchedMPs, vpMPs, vpMatchedMPs);
 
@@ -568,6 +578,7 @@ bool LoopClosing::DetectAndReffineSim3FromLastKF(KeyFrame* pCurrentKF, KeyFrame*
             if(nNumProjMatches >= nProjMatchesRep)
             {
                 gScw = gScw_estimation;
+                FT_CALC_LOG("loop_closing.sim3.refine.success projections=%d optimized=%d", nNumProjMatches, numOptMatches);
                 return true;
             }
         }
@@ -578,6 +589,7 @@ bool LoopClosing::DetectAndReffineSim3FromLastKF(KeyFrame* pCurrentKF, KeyFrame*
 bool LoopClosing::DetectCommonRegionsFromBoW(std::vector<KeyFrame*> &vpBowCand, KeyFrame* &pMatchedKF2, KeyFrame* &pLastCurrentKF, g2o::Sim3 &g2oScw,
                                              int &nNumCoincidences, std::vector<MapPoint*> &vpMPs, std::vector<MapPoint*> &vpMatchedMPs)
 {
+    FT_CALC_SCOPE();
     int nBoWMatches = 20;
     int nBoWInliers = 15;
     int nSim3Inliers = 20;
@@ -615,7 +627,8 @@ bool LoopClosing::DetectCommonRegionsFromBoW(std::vector<KeyFrame*> &vpBowCand, 
         std::vector<KeyFrame*> vpCovKFi = pKFi->GetBestCovisibilityKeyFrames(nNumCovisibles);
         if(vpCovKFi.empty())
         {
-            std::cout << "Covisible list empty" << std::endl;
+            FT_CALC_LOG("loop_closing.bow.warning candidate=%llu reason=empty_covisibility",
+                        static_cast<unsigned long long>(pKFi->mnId));
             vpCovKFi.push_back(pKFi);
         }
         else
@@ -892,12 +905,16 @@ bool LoopClosing::DetectCommonRegionsFromBoW(std::vector<KeyFrame*> &vpBowCand, 
             }
         }
     }
+    FT_CALC_LOG("loop_closing.bow.result detected=%d loop=%d merge=%d candidates=%d",
+                (mbMergeDetected || mbLoopDetected) ? 1 : 0, mbLoopDetected ? 1 : 0,
+                mbMergeDetected ? 1 : 0, numCandidates);
     return false;
 }
 
 bool LoopClosing::DetectCommonRegionsFromLastKF(KeyFrame* pCurrentKF, KeyFrame* pMatchedKF, g2o::Sim3 &gScw, int &nNumProjMatches,
                                                 std::vector<MapPoint*> &vpMPs, std::vector<MapPoint*> &vpMatchedMPs)
 {
+    FT_CALC_SCOPE();
     set<MapPoint*> spAlreadyMatchedMPs(vpMatchedMPs.begin(), vpMatchedMPs.end());
     nNumProjMatches = FindMatchesByProjection(pCurrentKF, pMatchedKF, gScw, spAlreadyMatchedMPs, vpMPs, vpMatchedMPs);
 
@@ -914,6 +931,7 @@ int LoopClosing::FindMatchesByProjection(KeyFrame* pCurrentKF, KeyFrame* pMatche
                                          set<MapPoint*> &spMatchedMPinOrigin, vector<MapPoint*> &vpMapPoints,
                                          vector<MapPoint*> &vpMatchedMapPoints)
 {
+    FT_CALC_SCOPE();
     int nNumCovisibles = 10;
     vector<KeyFrame*> vpCovKFm = pMatchedKFw->GetBestCovisibilityKeyFrames(nNumCovisibles);
     int nInitialCov = vpCovKFm.size();
@@ -963,11 +981,19 @@ int LoopClosing::FindMatchesByProjection(KeyFrame* pCurrentKF, KeyFrame* pMatche
     vpMatchedMapPoints.resize(pCurrentKF->GetMapPointMatches().size(), static_cast<MapPoint*>(NULL));
     int num_matches = matcher.SearchByProjection(pCurrentKF, mScw, vpMapPoints, vpMatchedMapPoints, 3, 1.5);
 
+    FT_CALC_LOG("loop_closing.projection_matches current=%llu matched=%llu candidates=%llu matches=%d",
+                static_cast<unsigned long long>(pCurrentKF->mnId),
+                static_cast<unsigned long long>(pMatchedKFw->mnId),
+                static_cast<unsigned long long>(vpMapPoints.size()), num_matches);
     return num_matches;
 }
 
 void LoopClosing::CorrectLoop()
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("loop_closing.correct_loop.begin current=%llu matched=%llu",
+                static_cast<unsigned long long>(mpCurrentKF->mnId),
+                static_cast<unsigned long long>(mpLoopMatchedKF ? mpLoopMatchedKF->mnId : 0));
     //cout << "Loop detected!" << endl;
 
     // Send a stop signal to Local Mapping
@@ -978,7 +1004,7 @@ void LoopClosing::CorrectLoop()
     // If a Global Bundle Adjustment is running, abort it
     if(isRunningGBA())
     {
-        cout << "Stoping Global Bundle Adjustment...";
+        FT_CALC_LOG("loop_closing.gba.stop_requested reason=loop_correction");
         unique_lock<mutex> lock(mMutexGBA);
         mbStopGBA = true;
 
@@ -989,7 +1015,7 @@ void LoopClosing::CorrectLoop()
             mpThreadGBA->detach();
             delete mpThreadGBA;
         }
-        cout << "  Done!!" << endl;
+        FT_CALC_LOG("loop_closing.gba.stop_requested_complete");
     }
 
     // Wait until Local Mapping has effectively stopped
@@ -1214,6 +1240,7 @@ void LoopClosing::CorrectLoop()
 
 void LoopClosing::MergeLocal()
 {
+    FT_CALC_SCOPE();
     int numTemporalKFs = 25; //Temporal KFs in the local window if the map is inertial.
 
     //Relationship to rebuild the essential graph, it is used two times, first in the local window and later in the rest of the map
@@ -1499,8 +1526,8 @@ void LoopClosing::MergeLocal()
     }
     /*if(numPointsWithCorrection>0)
     {
-        std::cout << "[Merge]: " << std::to_string(numPointsWithCorrection) << " points removed from Ma due to its reference KF is not in welding area" << std::endl;
-        std::cout << "[Merge]: Ma has " << std::to_string(spLocalWindowMPs.size()) << " points" << std::endl;
+        FT_CALC_LOG("loop_closing.merge.local_points_removed=%d remaining=%llu",
+                    numPointsWithCorrection, static_cast<unsigned long long>(spLocalWindowMPs.size()));
     }*/
 
     {
@@ -2064,7 +2091,10 @@ void LoopClosing::MergeLocal2()
 
 void LoopClosing::CheckObservations(set<KeyFrame*> &spKFsMap1, set<KeyFrame*> &spKFsMap2)
 {
-    cout << "----------------------" << endl;
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("loop_closing.observation_check.begin map1_keyframes=%llu map2_keyframes=%llu",
+                static_cast<unsigned long long>(spKFsMap1.size()),
+                static_cast<unsigned long long>(spKFsMap2.size()));
     for(KeyFrame* pKFi1 : spKFsMap1)
     {
         map<KeyFrame*, int> mMatchedMP;
@@ -2097,23 +2127,28 @@ void LoopClosing::CheckObservations(set<KeyFrame*> &spKFsMap1, set<KeyFrame*> &s
 
         if(mMatchedMP.size() == 0)
         {
-            cout << "CHECK-OBS: KF " << pKFi1->mnId << " has not any matched MP with the other map" << endl;
+            FT_CALC_LOG("loop_closing.observation_check keyframe=%llu matches=0",
+                        static_cast<unsigned long long>(pKFi1->mnId));
         }
         else
         {
-            cout << "CHECK-OBS: KF " << pKFi1->mnId << " has matched MP with " << mMatchedMP.size() << " KF from the other map" << endl;
+            FT_CALC_LOG("loop_closing.observation_check keyframe=%llu matched_keyframes=%llu",
+                        static_cast<unsigned long long>(pKFi1->mnId),
+                        static_cast<unsigned long long>(mMatchedMP.size()));
             for(pair<KeyFrame*, int> matchedKF : mMatchedMP)
             {
-                cout << "   -KF: " << matchedKF.first->mnId << ", Number of matches: " << matchedKF.second << endl;
+                FT_CALC_LOG("loop_closing.observation_check_pair keyframe=%llu matches=%d",
+                            static_cast<unsigned long long>(matchedKF.first->mnId), matchedKF.second);
             }
         }
     }
-    cout << "----------------------" << endl;
+    FT_CALC_LOG("loop_closing.observation_check.end");
 }
 
 
 void LoopClosing::SearchAndFuse(const KeyFrameAndPose &CorrectedPosesMap, vector<MapPoint*> &vpMapPoints)
 {
+    FT_CALC_SCOPE();
     ORBmatcher matcher(0.8);
 
     int total_replaces = 0;
@@ -2150,12 +2185,15 @@ void LoopClosing::SearchAndFuse(const KeyFrameAndPose &CorrectedPosesMap, vector
 
         total_replaces += num_replaces;
     }
-    //cout << "[FUSE]: " << total_replaces << " MPs had been fused" << endl;
+    FT_CALC_LOG("loop_closing.search_and_fuse poses=%llu mappoints=%llu replacements=%d",
+                static_cast<unsigned long long>(CorrectedPosesMap.size()),
+                static_cast<unsigned long long>(vpMapPoints.size()), total_replaces);
 }
 
 
 void LoopClosing::SearchAndFuse(const vector<KeyFrame*> &vConectedKFs, vector<MapPoint*> &vpMapPoints)
 {
+    FT_CALC_SCOPE();
     ORBmatcher matcher(0.8);
 
     int total_replaces = 0;
@@ -2192,7 +2230,9 @@ void LoopClosing::SearchAndFuse(const vector<KeyFrame*> &vConectedKFs, vector<Ma
         /*cout << "FUSE-POSE: KF " << pKF->mnId << " ->" << num_replaces << " MPs fused" << endl;
         total_replaces += num_replaces;*/
     }
-    //cout << "FUSE-POSE: " << total_replaces << " MPs had been fused" << endl;
+    FT_CALC_LOG("loop_closing.search_and_fuse_pose keyframes=%llu mappoints=%llu replacements=%d",
+                static_cast<unsigned long long>(vConectedKFs.size()),
+                static_cast<unsigned long long>(vpMapPoints.size()), total_replaces);
 }
 
 
@@ -2236,10 +2276,11 @@ void LoopClosing::RequestResetActiveMap(Map *pMap)
 
 void LoopClosing::ResetIfRequested()
 {
+    FT_CALC_SCOPE();
     unique_lock<mutex> lock(mMutexReset);
     if(mbResetRequested)
     {
-        cout << "Loop closer reset requested..." << endl;
+        FT_CALC_LOG("loop_closing.reset.execute type=all");
         mlpLoopKeyFrameQueue.clear();
         mLastLoopKFid=0;  //TODO old variable, it is not use in the new algorithm
         mbResetRequested=false;
@@ -2266,8 +2307,13 @@ void LoopClosing::ResetIfRequested()
 }
 
 void LoopClosing::RunGlobalBundleAdjustment(Map* pActiveMap, unsigned long nLoopKF)
-{  
-    Verbose::PrintMess("Starting Global Bundle Adjustment", Verbose::VERBOSITY_NORMAL);
+{
+    CalculationLog::preallocate();
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("loop_closing.gba.begin map_id=%llu loop_keyframe=%llu keyframes=%llu mappoints=%llu",
+                static_cast<unsigned long long>(pActiveMap->GetId()), nLoopKF,
+                static_cast<unsigned long long>(pActiveMap->GetAllKeyFrames().size()),
+                static_cast<unsigned long long>(pActiveMap->GetAllMapPoints().size()));
 
 #ifdef REGISTER_TIMES
     std::chrono::steady_clock::time_point time_StartFGBA = std::chrono::steady_clock::now();
@@ -2314,8 +2360,7 @@ void LoopClosing::RunGlobalBundleAdjustment(Map* pActiveMap, unsigned long nLoop
 
         if(!mbStopGBA)
         {
-            Verbose::PrintMess("Global Bundle Adjustment finished", Verbose::VERBOSITY_NORMAL);
-            Verbose::PrintMess("Updating map ...", Verbose::VERBOSITY_NORMAL);
+            FT_CALC_LOG("loop_closing.gba.optimization_complete stopped=%d", mbStopGBA ? 1 : 0);
 
             mpLocalMapper->RequestStop();
             // Wait until Local Mapping has effectively stopped
@@ -2502,19 +2547,26 @@ void LoopClosing::RunGlobalBundleAdjustment(Map* pActiveMap, unsigned long nLoop
             double timeFGBA = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndUpdateMap - time_StartFGBA).count();
             vdFGBATotal_ms.push_back(timeFGBA);
 #endif
-            Verbose::PrintMess("Map updated!", Verbose::VERBOSITY_NORMAL);
+            FT_CALC_LOG("loop_closing.gba.map_updated");
         }
 
         mbFinishedGBA = true;
         mbRunningGBA = false;
+        FT_CALC_LOG("loop_closing.gba.end stopped=%d", mbStopGBA ? 1 : 0);
     }
 }
 
 void LoopClosing::RequestFinish()
 {
-    unique_lock<mutex> lock(mMutexFinish);
-    // cout << "LC: Finish requested" << endl;
-    mbFinishRequested = true;
+    {
+        unique_lock<mutex> lock(mMutexFinish);
+        mbFinishRequested = true;
+    }
+    {
+        unique_lock<mutex> lock(mMutexGBA);
+        mbStopGBA = true;
+    }
+    FT_CALC_LOG("loop_closing.worker.finish_requested gba_stop=1");
 }
 
 bool LoopClosing::CheckFinish()

@@ -18,6 +18,8 @@
 
 #include "OptimizableTypes.h"
 
+#include "CalculationLogger.h"
+
 namespace ORB_SLAM3 {
     bool EdgeSE3ProjectXYZOnlyPose::read(std::istream& is){
         for (int i=0; i<2; i++){
@@ -60,6 +62,8 @@ namespace ORB_SLAM3 {
                      y ,  -x , 0.f, 0.f, 0.f, 1.f;
 
         _jacobianOplusXi = -pCamera->projectJac(xyz_trans) * SE3deriv;
+        FT_CALC_LOG("optimizer.edge.project_xyz_only_pose.linearize depth=%f jacobian_norm=%f",
+                    z, _jacobianOplusXi.norm());
     }
 
     bool EdgeSE3ProjectXYZOnlyPoseToBody::read(std::istream& is){
@@ -104,6 +108,8 @@ namespace ORB_SLAM3 {
                 y_w ,  -x_w , 0.f, 0.f, 0.f, 1.f;
 
         _jacobianOplusXi = -pCamera->projectJac(X_r) * mTrl.rotation().toRotationMatrix() * SE3deriv;
+        FT_CALC_LOG("optimizer.edge.project_xyz_only_pose_body.linearize depth=%f jacobian_norm=%f",
+                    z_w, _jacobianOplusXi.norm());
     }
 
     EdgeSE3ProjectXYZ::EdgeSE3ProjectXYZ() : BaseBinaryEdge<2, Eigen::Vector2d, g2o::VertexSBAPointXYZ, g2o::VertexSE3Expmap>() {
@@ -157,6 +163,8 @@ namespace ORB_SLAM3 {
                 y ,  -x , 0.f, 0.f, 0.f, 1.f;
 
         _jacobianOplusXj = projectJac * SE3deriv;
+        FT_CALC_LOG("optimizer.edge.project_xyz.linearize depth=%f point_jacobian_norm=%f pose_jacobian_norm=%f",
+                    z, _jacobianOplusXi.norm(), _jacobianOplusXj.norm());
     }
 
     EdgeSE3ProjectXYZToBody::EdgeSE3ProjectXYZToBody() : BaseBinaryEdge<2, Eigen::Vector2d, g2o::VertexSBAPointXYZ, g2o::VertexSE3Expmap>() {
@@ -210,6 +218,8 @@ namespace ORB_SLAM3 {
                 y ,  -x , 0.f, 0.f, 0.f, 1.f;
 
         _jacobianOplusXj = -pCamera->projectJac(X_r) * mTrl.rotation().toRotationMatrix() * SE3deriv;
+        FT_CALC_LOG("optimizer.edge.project_xyz_body.linearize depth=%f point_jacobian_norm=%f pose_jacobian_norm=%f",
+                    z, _jacobianOplusXi.norm(), _jacobianOplusXj.norm());
     }
 
 

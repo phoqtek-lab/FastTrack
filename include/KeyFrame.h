@@ -31,6 +31,7 @@
 
 #include "GeometricCamera.h"
 #include "SerializationUtils.h"
+#include "CalculationLogApi.h"
 
 #include <mutex>
 
@@ -533,7 +534,7 @@ public:
                 else right++;
             }
         }
-        cout << "Point distribution in KeyFrame: left-> " << left << " --- right-> " << right << endl;
+        CalculationLog::pointDistribution("KeyFrame", left, right);
     }
 
 

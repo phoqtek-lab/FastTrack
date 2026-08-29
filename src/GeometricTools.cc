@@ -18,6 +18,7 @@
 
 #include "GeometricTools.h"
 
+#include "CalculationLogger.h"
 #include "KeyFrame.h"
 
 namespace ORB_SLAM3
@@ -25,6 +26,7 @@ namespace ORB_SLAM3
 
 Eigen::Matrix3f GeometricTools::ComputeF12(KeyFrame* &pKF1, KeyFrame* &pKF2)
 {
+    FT_CALC_SCOPE();
     Sophus::SE3<float> Tc1w = pKF1->GetPose();
     Sophus::Matrix3<float> Rc1w = Tc1w.rotationMatrix();
     Sophus::SE3<float>::TranslationMember tc1w = Tc1w.translation();
@@ -41,11 +43,16 @@ Eigen::Matrix3f GeometricTools::ComputeF12(KeyFrame* &pKF1, KeyFrame* &pKF2)
     const Eigen::Matrix3f K1 = pKF1->mpCamera->toK_();
     const Eigen::Matrix3f K2 = pKF2->mpCamera->toK_();
 
-    return K1.transpose().inverse() * tc1c2x * Rc1c2 * K2.inverse();
+    const Eigen::Matrix3f F12 = K1.transpose().inverse() * tc1c2x * Rc1c2 * K2.inverse();
+    FT_CALC_LOG("geometry.compute_f12 kf1=%llu kf2=%llu baseline=%f norm=%f",
+                static_cast<unsigned long long>(pKF1->mnId),
+                static_cast<unsigned long long>(pKF2->mnId), tc1c2.norm(), F12.norm());
+    return F12;
 }
 
 bool GeometricTools::Triangulate(Eigen::Vector3f &x_c1, Eigen::Vector3f &x_c2,Eigen::Matrix<float,3,4> &Tc1w ,Eigen::Matrix<float,3,4> &Tc2w , Eigen::Vector3f &x3D)
 {
+    FT_CALC_SCOPE();
     Eigen::Matrix4f A;
     A.block<1,4>(0,0) = x_c1(0) * Tc1w.block<1,4>(2,0) - Tc1w.block<1,4>(0,0);
     A.block<1,4>(1,0) = x_c1(1) * Tc1w.block<1,4>(2,0) - Tc1w.block<1,4>(1,0);
@@ -56,12 +63,15 @@ bool GeometricTools::Triangulate(Eigen::Vector3f &x_c1, Eigen::Vector3f &x_c2,Ei
 
     Eigen::Vector4f x3Dh = svd.matrixV().col(3);
 
-    if(x3Dh(3)==0)
+    if(x3Dh(3)==0) {
+        FT_CALC_NOTICE("geometry.triangulate.reject reason=zero_homogeneous_scale");
         return false;
+    }
 
     // Euclidean coordinates
     x3D = x3Dh.head(3)/x3Dh(3);
 
+    FT_CALC_LOG("geometry.triangulate.success x=%f y=%f z=%f", x3D(0), x3D(1), x3D(2));
     return true;
 }
 

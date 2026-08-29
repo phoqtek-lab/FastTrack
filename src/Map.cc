@@ -18,6 +18,7 @@
 
 
 #include "Map.h"
+#include "CalculationLogger.h"
 #include<mutex>
 
 namespace ORB_SLAM3
@@ -28,6 +29,7 @@ long unsigned int Map::nNextId=0;
 Map::Map():mnMaxKFid(0),mnBigChangeIdx(0), mbImuInitialized(false), mnMapChange(0), mpFirstRegionKF(static_cast<KeyFrame*>(NULL)),
 mbFail(false), mIsInUse(false), mHasTumbnail(false), mbBad(false), mnMapChangeNotified(0), mbIsInertial(false), mbIMU_BA1(false), mbIMU_BA2(false)
 {
+    FT_CALC_SCOPE();
     mnId=nNextId++;
     mThumbnail = static_cast<GLubyte*>(NULL);
 }
@@ -36,6 +38,7 @@ Map::Map(int initKFid):mnInitKFid(initKFid), mnMaxKFid(initKFid),/*mnLastLoopKFi
                        mHasTumbnail(false), mbBad(false), mbImuInitialized(false), mpFirstRegionKF(static_cast<KeyFrame*>(NULL)),
                        mnMapChange(0), mbFail(false), mnMapChangeNotified(0), mbIsInertial(false), mbIMU_BA1(false), mbIMU_BA2(false)
 {
+    FT_CALC_SCOPE();
     mnId=nNextId++;
     mThumbnail = static_cast<GLubyte*>(NULL);
 }
@@ -58,9 +61,12 @@ Map::~Map()
 
 void Map::AddKeyFrame(KeyFrame *pKF)
 {
+    FT_CALC_SCOPE();
     unique_lock<mutex> lock(mMutexMap);
     if(mspKeyFrames.empty()){
-        cout << "First KF:" << pKF->mnId << "; Map init KF:" << mnInitKFid << endl;
+        FT_CALC_LOG("map.keyframe.first map_id=%llu keyframe=%llu previous_init=%llu",
+                    static_cast<unsigned long long>(mnId), static_cast<unsigned long long>(pKF->mnId),
+                    static_cast<unsigned long long>(mnInitKFid));
         mnInitKFid = pKF->mnId;
         mpKFinitial = pKF;
         mpKFlowerID = pKF;
@@ -78,12 +84,17 @@ void Map::AddKeyFrame(KeyFrame *pKF)
 
 void Map::AddMapPoint(MapPoint *pMP)
 {
+    FT_CALC_SCOPE();
     unique_lock<mutex> lock(mMutexMap);
     mspMapPoints.insert(pMP);
+    FT_CALC_LOG("map.mappoint.add map_id=%llu point=%llu total=%llu",
+                static_cast<unsigned long long>(mnId), static_cast<unsigned long long>(pMP->mnId),
+                static_cast<unsigned long long>(mspMapPoints.size()));
 }
 
 void Map::SetImuInitialized()
 {
+    FT_CALC_LOG("map.imu_initialized map_id=%llu", static_cast<unsigned long long>(mnId));
     unique_lock<mutex> lock(mMutexMap);
     mbImuInitialized = true;
 }
@@ -96,6 +107,7 @@ bool Map::isImuInitialized()
 
 void Map::EraseMapPoint(MapPoint *pMP)
 {
+    FT_CALC_SCOPE();
     unique_lock<mutex> lock(mMutexMap);
     mspMapPoints.erase(pMP);
 
@@ -105,6 +117,7 @@ void Map::EraseMapPoint(MapPoint *pMP)
 
 void Map::EraseKeyFrame(KeyFrame *pKF)
 {
+    FT_CALC_SCOPE();
     unique_lock<mutex> lock(mMutexMap);
     mspKeyFrames.erase(pKF);
     if(mspKeyFrames.size()>0)
@@ -250,7 +263,12 @@ bool Map::IsBad()
 
 void Map::ApplyScaledRotation(const Sophus::SE3f &T, const float s, const bool bScaledVel)
 {
+    FT_CALC_SCOPE();
     unique_lock<mutex> lock(mMutexMap);
+    FT_CALC_LOG("map.scale_rotation.begin map_id=%llu scale=%f scaled_velocity=%d keyframes=%llu mappoints=%llu",
+                static_cast<unsigned long long>(mnId), s, bScaledVel ? 1 : 0,
+                static_cast<unsigned long long>(mspKeyFrames.size()),
+                static_cast<unsigned long long>(mspMapPoints.size()));
 
     // Body position (IMU) of first keyframe is fixed to (0,0,0)
     Sophus::SE3f Tyw = T;
@@ -279,6 +297,8 @@ void Map::ApplyScaledRotation(const Sophus::SE3f &T, const float s, const bool b
         pMP->UpdateNormalAndDepth();
     }
     mnMapChange++;
+    FT_CALC_LOG("map.scale_rotation.end map_id=%llu change=%d",
+                static_cast<unsigned long long>(mnId), mnMapChange);
 }
 
 void Map::SetInertialSensor()

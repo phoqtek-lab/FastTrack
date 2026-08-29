@@ -18,6 +18,9 @@
 
 #include "Pinhole.h"
 
+#include "CalculationLogger.h"
+
+#include <algorithm>
 #include <boost/serialization/export.hpp>
 
 //BOOST_CLASS_EXPORT_IMPLEMENT(ORB_SLAM3::Pinhole)
@@ -82,12 +85,20 @@ namespace ORB_SLAM3 {
 
     bool Pinhole::ReconstructWithTwoViews(const std::vector<cv::KeyPoint>& vKeys1, const std::vector<cv::KeyPoint>& vKeys2, const std::vector<int> &vMatches12,
                                  Sophus::SE3f &T21, std::vector<cv::Point3f> &vP3D, std::vector<bool> &vbTriangulated){
+        FT_CALC_SCOPE();
+        FT_CALC_LOG("pinhole.reconstruct_two_views keys1=%d keys2=%d matches=%d camera_initialized=%d",
+                    static_cast<int>(vKeys1.size()), static_cast<int>(vKeys2.size()),
+                    static_cast<int>(vMatches12.size()), tvr != nullptr ? 1 : 0);
         if(!tvr){
             Eigen::Matrix3f K = this->toK_();
             tvr = new TwoViewReconstruction(K);
         }
 
-        return tvr->Reconstruct(vKeys1,vKeys2,vMatches12,T21,vP3D,vbTriangulated);
+        const bool result = tvr->Reconstruct(vKeys1,vKeys2,vMatches12,T21,vP3D,vbTriangulated);
+        FT_CALC_NOTICE("pinhole.reconstruct_two_views.end success=%d points=%d triangulated=%d", result ? 1 : 0,
+                       static_cast<int>(vP3D.size()),
+                       static_cast<int>(std::count(vbTriangulated.begin(), vbTriangulated.end(), true)));
+        return result;
     }
 
 
@@ -120,8 +131,10 @@ namespace ORB_SLAM3 {
 
         const float den = a*a+b*b;
 
-        if(den==0)
+        if(den==0) {
+            FT_CALC_NOTICE("pinhole.epipolar.reject reason=degenerate_line");
             return false;
+        }
 
         const float dsqr = num*num/den;
 

@@ -18,6 +18,7 @@
 
 
 #include "Viewer.h"
+#include "CalculationLogger.h"
 #include <pangolin/pangolin.h>
 
 #include <mutex>
@@ -29,6 +30,7 @@ Viewer::Viewer(System* pSystem, FrameDrawer *pFrameDrawer, MapDrawer *pMapDrawer
     both(false), mpSystem(pSystem), mpFrameDrawer(pFrameDrawer),mpMapDrawer(pMapDrawer), mpTracker(pTracking),
     mbFinishRequested(false), mbFinished(true), mbStopped(true), mbStopRequested(false)
 {
+    FT_CALC_SCOPE();
     if(settings){
         newParameterLoader(settings);
     }
@@ -40,7 +42,7 @@ Viewer::Viewer(System* pSystem, FrameDrawer *pFrameDrawer, MapDrawer *pMapDrawer
 
         if(!is_correct)
         {
-            std::cerr << "**ERROR in the config file, the format is not correct**" << std::endl;
+            FT_CALC_NOTICE("viewer.settings.invalid path=%s", strSettingPath.c_str());
             try
             {
                 throw -1;
@@ -56,6 +58,7 @@ Viewer::Viewer(System* pSystem, FrameDrawer *pFrameDrawer, MapDrawer *pMapDrawer
 }
 
 void Viewer::newParameterLoader(Settings *settings) {
+    FT_CALC_SCOPE();
     mImageViewerScale = 1.f;
 
     float fps = settings->fps();
@@ -72,10 +75,14 @@ void Viewer::newParameterLoader(Settings *settings) {
     mViewpointY = settings->viewPointY();
     mViewpointZ = settings->viewPointZ();
     mViewpointF = settings->viewPointF();
+    FT_CALC_LOG("viewer.settings.loaded width=%d height=%d period_ms=%f scale=%f viewpoint=%f,%f,%f,%f",
+                mImageWidth, mImageHeight, mT, mImageViewerScale,
+                mViewpointX, mViewpointY, mViewpointZ, mViewpointF);
 }
 
 bool Viewer::ParseViewerParamFile(cv::FileStorage &fSettings)
 {
+    FT_CALC_SCOPE();
     bool b_miss_params = false;
     mImageViewerScale = 1.f;
 
@@ -91,7 +98,7 @@ bool Viewer::ParseViewerParamFile(cv::FileStorage &fSettings)
     }
     else
     {
-        std::cerr << "*Camera.width parameter doesn't exist or is not a real number*" << std::endl;
+        FT_CALC_NOTICE("viewer.parameter.missing name=Camera.width");
         b_miss_params = true;
     }
 
@@ -102,7 +109,7 @@ bool Viewer::ParseViewerParamFile(cv::FileStorage &fSettings)
     }
     else
     {
-        std::cerr << "*Camera.height parameter doesn't exist or is not a real number*" << std::endl;
+        FT_CALC_NOTICE("viewer.parameter.missing name=Camera.height");
         b_miss_params = true;
     }
 
@@ -119,7 +126,7 @@ bool Viewer::ParseViewerParamFile(cv::FileStorage &fSettings)
     }
     else
     {
-        std::cerr << "*Viewer.ViewpointX parameter doesn't exist or is not a real number*" << std::endl;
+        FT_CALC_NOTICE("viewer.parameter.missing name=Viewer.ViewpointX");
         b_miss_params = true;
     }
 
@@ -130,7 +137,7 @@ bool Viewer::ParseViewerParamFile(cv::FileStorage &fSettings)
     }
     else
     {
-        std::cerr << "*Viewer.ViewpointY parameter doesn't exist or is not a real number*" << std::endl;
+        FT_CALC_NOTICE("viewer.parameter.missing name=Viewer.ViewpointY");
         b_miss_params = true;
     }
 
@@ -141,7 +148,7 @@ bool Viewer::ParseViewerParamFile(cv::FileStorage &fSettings)
     }
     else
     {
-        std::cerr << "*Viewer.ViewpointZ parameter doesn't exist or is not a real number*" << std::endl;
+        FT_CALC_NOTICE("viewer.parameter.missing name=Viewer.ViewpointZ");
         b_miss_params = true;
     }
 
@@ -152,15 +159,19 @@ bool Viewer::ParseViewerParamFile(cv::FileStorage &fSettings)
     }
     else
     {
-        std::cerr << "*Viewer.ViewpointF parameter doesn't exist or is not a real number*" << std::endl;
+        FT_CALC_NOTICE("viewer.parameter.missing name=Viewer.ViewpointF");
         b_miss_params = true;
     }
 
+    FT_CALC_LOG("viewer.settings.parsed valid=%d width=%d height=%d period_ms=%f",
+                b_miss_params ? 0 : 1, mImageWidth, mImageHeight, mT);
     return !b_miss_params;
 }
 
 void Viewer::Run()
 {
+    CalculationLog::preallocate();
+    FT_CALC_SCOPE();
     mbFinished = false;
     mbStopped = false;
 
@@ -218,7 +229,7 @@ void Viewer::Run()
 
     float trackedImageScale = mpTracker->GetImageScale();
 
-    cout << "Starting the Viewer" << endl;
+    FT_CALC_LOG("viewer.run.start width=%d height=%d period_ms=%f", mImageWidth, mImageHeight, mT);
     while(1)
     {
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);

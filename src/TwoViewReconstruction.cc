@@ -18,12 +18,14 @@
 
 #include "TwoViewReconstruction.h"
 
+#include "CalculationLogger.h"
 #include "Converter.h"
 #include "GeometricTools.h"
 
 #include "Thirdparty/DBoW2/DUtils/Random.h"
 
 #include<thread>
+#include <algorithm>
 
 
 using namespace std;
@@ -31,16 +33,19 @@ namespace ORB_SLAM3
 {
     TwoViewReconstruction::TwoViewReconstruction(const Eigen::Matrix3f& k, float sigma, int iterations)
     {
+        FT_CALC_SCOPE();
         mK = k;
 
         mSigma = sigma;
         mSigma2 = sigma*sigma;
         mMaxIterations = iterations;
+        FT_CALC_LOG("two_view.constructor sigma=%f iterations=%d", sigma, iterations);
     }
 
     bool TwoViewReconstruction::Reconstruct(const std::vector<cv::KeyPoint>& vKeys1, const std::vector<cv::KeyPoint>& vKeys2, const vector<int> &vMatches12,
                                              Sophus::SE3f &T21, vector<cv::Point3f> &vP3D, vector<bool> &vbTriangulated)
     {
+        FT_CALC_SCOPE();
         mvKeys1.clear();
         mvKeys2.clear();
 
@@ -64,6 +69,13 @@ namespace ORB_SLAM3
         }
 
         const int N = mvMatches12.size();
+        FT_CALC_LOG("two_view.reconstruct keys1=%d keys2=%d matches=%d iterations=%d",
+                    static_cast<int>(vKeys1.size()), static_cast<int>(vKeys2.size()), N, mMaxIterations);
+
+        if (N < 8) {
+            FT_CALC_NOTICE("two_view.reconstruct.reject reason=insufficient_matches matches=%d", N);
+            return false;
+        }
 
         // Indices for minimum set selection
         vector<size_t> vAllIndices;
@@ -110,7 +122,10 @@ namespace ORB_SLAM3
         threadF.join();
 
         // Compute ratio of scores
-        if(SH+SF == 0.f) return false;
+        if(SH+SF == 0.f) {
+            FT_CALC_NOTICE("two_view.reconstruct.reject reason=zero_model_score homography=%f fundamental=%f", SH, SF);
+            return false;
+        }
         float RH = SH/(SH+SF);
 
         float minParallax = 1.0;
@@ -118,20 +133,28 @@ namespace ORB_SLAM3
         // Try to reconstruct from homography or fundamental depending on the ratio (0.40-0.45)
         if(RH>0.50) // if(RH>0.40)
         {
-            //cout << "Initialization from Homography" << endl;
-            return ReconstructH(vbMatchesInliersH,H, mK,T21,vP3D,vbTriangulated,minParallax,50);
+            FT_CALC_LOG("two_view.reconstruct.model=homography score_h=%f score_f=%f ratio=%f", SH, SF, RH);
+            const bool result = ReconstructH(vbMatchesInliersH,H, mK,T21,vP3D,vbTriangulated,minParallax,50);
+            FT_CALC_NOTICE("two_view.reconstruct.end model=homography success=%d points=%d", result ? 1 : 0,
+                           static_cast<int>(vP3D.size()));
+            return result;
         }
         else //if(pF_HF>0.6)
         {
-            //cout << "Initialization from Fundamental" << endl;
-            return ReconstructF(vbMatchesInliersF,F,mK,T21,vP3D,vbTriangulated,minParallax,50);
+            FT_CALC_LOG("two_view.reconstruct.model=fundamental score_h=%f score_f=%f ratio=%f", SH, SF, RH);
+            const bool result = ReconstructF(vbMatchesInliersF,F,mK,T21,vP3D,vbTriangulated,minParallax,50);
+            FT_CALC_NOTICE("two_view.reconstruct.end model=fundamental success=%d points=%d", result ? 1 : 0,
+                           static_cast<int>(vP3D.size()));
+            return result;
         }
     }
 
     void TwoViewReconstruction::FindHomography(vector<bool> &vbMatchesInliers, float &score, Eigen::Matrix3f &H21)
     {
+        FT_CALC_SCOPE();
         // Number of putative matches
         const int N = mvMatches12.size();
+        FT_CALC_LOG("two_view.find_homography matches=%d iterations=%d", N, mMaxIterations);
 
         // Normalize coordinates
         vector<cv::Point2f> vPn1, vPn2;
@@ -176,13 +199,17 @@ namespace ORB_SLAM3
                 score = currentScore;
             }
         }
+        FT_CALC_LOG("two_view.find_homography.end score=%f inliers=%d", score,
+                    static_cast<int>(std::count(vbMatchesInliers.begin(), vbMatchesInliers.end(), true)));
     }
 
 
     void TwoViewReconstruction::FindFundamental(vector<bool> &vbMatchesInliers, float &score, Eigen::Matrix3f &F21)
     {
+        FT_CALC_SCOPE();
         // Number of putative matches
-        const int N = vbMatchesInliers.size();
+        const int N = mvMatches12.size();
+        FT_CALC_LOG("two_view.find_fundamental matches=%d iterations=%d", N, mMaxIterations);
 
         // Normalize coordinates
         vector<cv::Point2f> vPn1, vPn2;
@@ -227,10 +254,13 @@ namespace ORB_SLAM3
                 score = currentScore;
             }
         }
+        FT_CALC_LOG("two_view.find_fundamental.end score=%f inliers=%d", score,
+                    static_cast<int>(std::count(vbMatchesInliers.begin(), vbMatchesInliers.end(), true)));
     }
 
     Eigen::Matrix3f TwoViewReconstruction::ComputeH21(const vector<cv::Point2f> &vP1, const vector<cv::Point2f> &vP2)
     {
+        FT_CALC_SCOPE();
         const int N = vP1.size();
 
         Eigen::MatrixXf A(2*N, 9);
@@ -268,11 +298,13 @@ namespace ORB_SLAM3
 
         Eigen::Matrix<float,3,3,Eigen::RowMajor> H(svd.matrixV().col(8).data());
 
+        FT_CALC_LOG("two_view.compute_homography points=%d norm=%f", N, H.norm());
         return H;
     }
 
     Eigen::Matrix3f TwoViewReconstruction::ComputeF21(const vector<cv::Point2f> &vP1,const vector<cv::Point2f> &vP2)
     {
+        FT_CALC_SCOPE();
         const int N = vP1.size();
 
         Eigen::MatrixXf A(N, 9);
@@ -304,11 +336,14 @@ namespace ORB_SLAM3
         Eigen::Vector3f w = svd2.singularValues();
         w(2) = 0;
 
-        return svd2.matrixU() * Eigen::DiagonalMatrix<float,3>(w) * svd2.matrixV().transpose();
+        const Eigen::Matrix3f F = svd2.matrixU() * Eigen::DiagonalMatrix<float,3>(w) * svd2.matrixV().transpose();
+        FT_CALC_LOG("two_view.compute_fundamental points=%d norm=%f", N, F.norm());
+        return F;
     }
 
     float TwoViewReconstruction::CheckHomography(const Eigen::Matrix3f &H21, const Eigen::Matrix3f &H12, vector<bool> &vbMatchesInliers, float sigma)
     {
+        FT_CALC_SCOPE();
         const int N = mvMatches12.size();
 
         const float h11 = H21(0,0);
@@ -389,11 +424,14 @@ namespace ORB_SLAM3
                 vbMatchesInliers[i]=false;
         }
 
+        FT_CALC_LOG("two_view.check_homography matches=%d score=%f inliers=%d", N, score,
+                    static_cast<int>(std::count(vbMatchesInliers.begin(), vbMatchesInliers.end(), true)));
         return score;
     }
 
     float TwoViewReconstruction::CheckFundamental(const Eigen::Matrix3f &F21, vector<bool> &vbMatchesInliers, float sigma)
     {
+        FT_CALC_SCOPE();
         const int N = mvMatches12.size();
 
         const float f11 = F21(0,0);
@@ -469,12 +507,15 @@ namespace ORB_SLAM3
                 vbMatchesInliers[i]=false;
         }
 
+        FT_CALC_LOG("two_view.check_fundamental matches=%d score=%f inliers=%d", N, score,
+                    static_cast<int>(std::count(vbMatchesInliers.begin(), vbMatchesInliers.end(), true)));
         return score;
     }
 
     bool TwoViewReconstruction::ReconstructF(vector<bool> &vbMatchesInliers, Eigen::Matrix3f &F21, Eigen::Matrix3f &K,
                                              Sophus::SE3f &T21, vector<cv::Point3f> &vP3D, vector<bool> &vbTriangulated, float minParallax, int minTriangulated)
     {
+        FT_CALC_SCOPE();
         int N=0;
         for(size_t i=0, iend = vbMatchesInliers.size() ; i<iend; i++)
             if(vbMatchesInliers[i])
@@ -519,6 +560,8 @@ namespace ORB_SLAM3
         // If there is not a clear winner or not enough triangulated points reject initialization
         if(maxGood<nMinGood || nsimilar>1)
         {
+            FT_CALC_NOTICE("two_view.reconstruct_f.reject good=%d required=%d similar=%d parallax_threshold=%f",
+                           maxGood, nMinGood, nsimilar, minParallax);
             return false;
         }
 
@@ -531,6 +574,7 @@ namespace ORB_SLAM3
                 vbTriangulated = vbTriangulated1;
 
                 T21 = Sophus::SE3f(R1, t1);
+                FT_CALC_LOG("two_view.reconstruct_f.accept hypothesis=1 good=%d parallax=%f", nGood1, parallax1);
                 return true;
             }
         }else if(maxGood==nGood2)
@@ -541,6 +585,7 @@ namespace ORB_SLAM3
                 vbTriangulated = vbTriangulated2;
 
                 T21 = Sophus::SE3f(R2, t1);
+                FT_CALC_LOG("two_view.reconstruct_f.accept hypothesis=2 good=%d parallax=%f", nGood2, parallax2);
                 return true;
             }
         }else if(maxGood==nGood3)
@@ -551,6 +596,7 @@ namespace ORB_SLAM3
                 vbTriangulated = vbTriangulated3;
 
                 T21 = Sophus::SE3f(R1, t2);
+                FT_CALC_LOG("two_view.reconstruct_f.accept hypothesis=3 good=%d parallax=%f", nGood3, parallax3);
                 return true;
             }
         }else if(maxGood==nGood4)
@@ -561,16 +607,20 @@ namespace ORB_SLAM3
                 vbTriangulated = vbTriangulated4;
 
                 T21 = Sophus::SE3f(R2, t2);
+                FT_CALC_LOG("two_view.reconstruct_f.accept hypothesis=4 good=%d parallax=%f", nGood4, parallax4);
                 return true;
             }
         }
 
+        FT_CALC_NOTICE("two_view.reconstruct_f.reject reason=parallax_or_hypothesis best=%d parallax1=%f parallax2=%f parallax3=%f parallax4=%f",
+                       maxGood, parallax1, parallax2, parallax3, parallax4);
         return false;
     }
 
     bool TwoViewReconstruction::ReconstructH(vector<bool> &vbMatchesInliers, Eigen::Matrix3f &H21, Eigen::Matrix3f &K,
                                              Sophus::SE3f &T21, vector<cv::Point3f> &vP3D, vector<bool> &vbTriangulated, float minParallax, int minTriangulated)
     {
+        FT_CALC_SCOPE();
         int N=0;
         for(size_t i=0, iend = vbMatchesInliers.size() ; i<iend; i++)
             if(vbMatchesInliers[i])
@@ -596,6 +646,7 @@ namespace ORB_SLAM3
 
         if(d1/d2<1.00001 || d2/d3<1.00001)
         {
+            FT_CALC_NOTICE("two_view.reconstruct_h.reject reason=singular_values d1=%f d2=%f d3=%f", d1, d2, d3);
             return false;
         }
 
@@ -727,15 +778,20 @@ namespace ORB_SLAM3
             T21 = Sophus::SE3f(vR[bestSolutionIdx], vt[bestSolutionIdx]);
             vbTriangulated = bestTriangulated;
 
+            FT_CALC_LOG("two_view.reconstruct_h.accept hypothesis=%d best=%d second=%d parallax=%f",
+                        bestSolutionIdx, bestGood, secondBestGood, bestParallax);
             return true;
         }
 
+        FT_CALC_NOTICE("two_view.reconstruct_h.reject best=%d second=%d parallax=%f required=%f matches=%d",
+                       bestGood, secondBestGood, bestParallax, minParallax, N);
         return false;
     }
 
 
     void TwoViewReconstruction::Normalize(const vector<cv::KeyPoint> &vKeys, vector<cv::Point2f> &vNormalizedPoints, Eigen::Matrix3f &T)
     {
+        FT_CALC_SCOPE();
         float meanX = 0;
         float meanY = 0;
         const int N = vKeys.size();
@@ -781,12 +837,15 @@ namespace ORB_SLAM3
         T(0,2) = -meanX*sX;
         T(1,2) = -meanY*sY;
         T(2,2) = 1.f;
+        FT_CALC_LOG("two_view.normalize points=%d mean_x=%f mean_y=%f mean_dev_x=%f mean_dev_y=%f",
+                    N, meanX, meanY, meanDevX, meanDevY);
     }
 
     int TwoViewReconstruction::CheckRT(const Eigen::Matrix3f &R, const Eigen::Vector3f &t, const vector<cv::KeyPoint> &vKeys1, const vector<cv::KeyPoint> &vKeys2,
                                        const vector<Match> &vMatches12, vector<bool> &vbMatchesInliers,
                                        const Eigen::Matrix3f &K, vector<cv::Point3f> &vP3D, float th2, vector<bool> &vbGood, float &parallax)
     {
+        FT_CALC_SCOPE();
         // Calibration parameters
         const float fx = K(0,0);
         const float fy = K(1,1);
@@ -897,11 +956,14 @@ namespace ORB_SLAM3
         else
             parallax=0;
 
+        FT_CALC_LOG("two_view.check_rt matches=%d good=%d parallax=%f threshold=%f", static_cast<int>(vMatches12.size()),
+                    nGood, parallax, th2);
         return nGood;
     }
 
     void TwoViewReconstruction::DecomposeE(const Eigen::Matrix3f &E, Eigen::Matrix3f &R1, Eigen::Matrix3f &R2, Eigen::Vector3f &t)
     {
+        FT_CALC_SCOPE();
 
         Eigen::JacobiSVD<Eigen::Matrix3f> svd(E, Eigen::ComputeFullU | Eigen::ComputeFullV);
 
@@ -924,6 +986,7 @@ namespace ORB_SLAM3
         R2 = U * W.transpose() * Vt;
         if(R2.determinant() < 0)
             R2 = -R2;
+        FT_CALC_LOG("two_view.decompose_essential t_norm=%f det_r1=%f det_r2=%f", t.norm(), R1.determinant(), R2.determinant());
     }
 
 } //namespace ORB_SLAM

@@ -19,11 +19,15 @@
 
 #include "Config.h"
 
+#include "CalculationLogger.h"
+
 namespace ORB_SLAM3
 {
 
 bool ConfigParser::ParseConfigFile(std::string &strConfigFile)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("config.parse path=%s implemented=%d", strConfigFile.c_str(), 0);
     return true;
 }
 
