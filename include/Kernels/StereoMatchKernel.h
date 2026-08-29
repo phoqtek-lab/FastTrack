@@ -5,9 +5,9 @@
 #include "CudaUtils.h"
 #include "CudaWrappers/CudaKeyPoint.h"
 #include "KernelInterface.h"
+#include "CalculationLogApi.h"
 #include <stdio.h>
 #include <fstream>
-#include <iostream>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -29,7 +29,7 @@ public:
     void initialize() override;
     void shutdown() override;
     void saveStats(const std::string &file_path) override;
-    void launch() override { std::cout << "[StereoMatchKernel:] provide input for kernel launch.\n"; };
+    void launch() override { ORB_SLAM3::CalculationLog::text("stereo_match.launch.abort reason=no_input"); };
     void launch(std::vector<std::vector<int>> &vRowIndices, uchar* d_imagePyramidL, uchar* d_imagePyramidR, 
                 std::vector<cv::Mat> &mvImagePyramid, std::vector<cv::Mat> &mvImagePyramidRight,
                 std::vector<cv::KeyPoint> &mvKeys, std::vector<cv::KeyPoint> &mvKeysRight, cv::Mat mDescriptors, cv::Mat mDescriptorsRight, 

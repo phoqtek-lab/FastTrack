@@ -1,26 +1,12 @@
 #include "Kernels/CudaWrappers/CudaFrame.h"
+#include "CalculationLogApi.h"
 #include <cstdio>
 #include <vector>
-
-// #define DEBUG
-// #define TIME_MEASURMENT
-
-#ifdef DEBUG
-#define DEBUG_PRINT(msg) std::cout << "Debug [CudaFrame]: " << msg << std::endl
-#else
-#define DEBUG_PRINT(msg) do {} while (0)
-#endif
-
-#ifdef TIME_MEASURMENT
-#define TIMESTAMP_PRINT(msg) std::cout << "TimeStamp [CudaFrame]: " << msg << std::endl
-#else
-#define TIMESTAMP_PRINT(msg) do {} while (0)
-#endif
 
 namespace DATA_WRAPPER
 {
     void CudaFrame::initializeMemory(){
-        DEBUG_PRINT("Allocating GPU memory For Frame...");
+        ORB_SLAM3::CalculationLog::text("cuda.frame.memory.begin");
 
         int nFeatures = CudaUtils::nFeatures_with_th;
         
@@ -53,29 +39,38 @@ namespace DATA_WRAPPER
         } else {
             checkCudaError(cudaMalloc((void**)&mvbOutlier, nFeatures * sizeof(uint8_t)), "Frame::failed to allocate memory for mvbOutlier");
         }
+        ORB_SLAM3::CalculationLog::textf("cuda.frame.memory.end features=%d levels=%d fisheye=%d",
+                                          nFeatures, nLevels, cameraIsFisheye ? 1 : 0);
     }
 
     CudaFrame::CudaFrame() {
+        ORB_SLAM3::CalculationLog::text("cuda.frame.construct");
         initializeMemory();
     }
 
     void CudaFrame::setMvKeys(CudaKeyPoint* const &_mvKeys) {
          mvKeys = _mvKeys; 
          mvKeysIsOnGpu = true;
+         ORB_SLAM3::CalculationLog::text("cuda.frame.keys.left_on_gpu");
     }
     
     void CudaFrame::setMvKeysRight(CudaKeyPoint* const &_mvKeysRight) {
         mvKeysRight = _mvKeysRight; 
         mvKeysRightIsOnGpu = true;
+        ORB_SLAM3::CalculationLog::text("cuda.frame.keys.right_on_gpu");
     }
 
     void CudaFrame::setMDescriptors(uint8_t* const &_mDescriptors) { 
         mDescriptors = _mDescriptors; 
         mDescriptorsIsOnGpu = true;
+        ORB_SLAM3::CalculationLog::text("cuda.frame.descriptors.on_gpu");
     }
 
     void CudaFrame::setMemory(const ORB_SLAM3::Frame &F) {
-        DEBUG_PRINT("Filling CudaFrame Memory With Frame Data...");
+        ORB_SLAM3::CalculationLog::textf("cuda.frame.copy.begin frame=%llu features=%d left_features=%llu right_features=%llu",
+                                          static_cast<unsigned long long>(F.mnId), F.N,
+                                          static_cast<unsigned long long>(F.mvKeys.size()),
+                                          static_cast<unsigned long long>(F.mvKeysRight.size()));
 
         mnId = F.mnId;
         N = F.N;
@@ -177,11 +172,15 @@ namespace DATA_WRAPPER
         mTrl = F.GetRelativePoseTrl().matrix();
 
         checkCudaError(cudaDeviceSynchronize(), "[cudaFrame:] failed to set memory");  
+        ORB_SLAM3::CalculationLog::textf("cuda.frame.copy.end frame=%llu map_points=%llu outliers=%llu",
+                                          static_cast<unsigned long long>(F.mnId),
+                                          static_cast<unsigned long long>(F.mvpMapPoints.size()),
+                                          static_cast<unsigned long long>(F.mvbOutlier.size()));
 
     }
 
     void CudaFrame::freeMemory(){
-        DEBUG_PRINT("Freeing GPU Memory For Frame...");
+        ORB_SLAM3::CalculationLog::text("cuda.frame.memory.free.begin");
         checkCudaError(cudaFree(mvpMapPoints),"Failed to free frame memory: mvpMapPoints");
         checkCudaError(cudaFree(mvuRight),"Failed to free frame memory: mvuRight");
         if (!mDescriptorsIsOnGpu)
@@ -192,5 +191,6 @@ namespace DATA_WRAPPER
             checkCudaError(cudaFree((void*) mvKeysRight),"Failed to free frame memory: mvKeysRight");
         checkCudaError(cudaFree(mvKeysUn),"Failed to free frame memory: mvKeysUn");
         checkCudaError(cudaFree(mvbOutlier),"Failed to free frame memory: mvbOutlier");
+        ORB_SLAM3::CalculationLog::text("cuda.frame.memory.free.end");
     }
 }

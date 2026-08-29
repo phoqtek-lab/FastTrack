@@ -18,6 +18,7 @@
 
 #include "FrameDrawer.h"
 #include "Tracking.h"
+#include "CalculationLogger.h"
 
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui/highgui.hpp>
@@ -29,6 +30,7 @@ namespace ORB_SLAM3
 
 FrameDrawer::FrameDrawer(Atlas* pAtlas):both(false),mpAtlas(pAtlas)
 {
+    FT_CALC_SCOPE();
     mState=Tracking::SYSTEM_NOT_READY;
     mIm = cv::Mat(480,640,CV_8UC3, cv::Scalar(0,0,0));
     mImRight = cv::Mat(480,640,CV_8UC3, cv::Scalar(0,0,0));
@@ -36,6 +38,8 @@ FrameDrawer::FrameDrawer(Atlas* pAtlas):both(false),mpAtlas(pAtlas)
 
 cv::Mat FrameDrawer::DrawFrame(float imageScale)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("frame_drawer.draw_left scale=%f", imageScale);
     cv::Mat im;
     vector<cv::KeyPoint> vIniKeys; // Initialization: KeyPoints in reference frame
     vector<int> vMatches; // Initialization: correspondeces with reference keypoints
@@ -198,11 +202,15 @@ cv::Mat FrameDrawer::DrawFrame(float imageScale)
     cv::Mat imWithInfo;
     DrawTextInfo(im,state, imWithInfo);
 
+    FT_CALC_LOG("frame_drawer.draw_left.end state=%d keypoints=%d tracked=%d tracked_vo=%d",
+                state, static_cast<int>(vCurrentKeys.size()), mnTracked, mnTrackedVO);
     return imWithInfo;
 }
 
 cv::Mat FrameDrawer::DrawRightFrame(float imageScale)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("frame_drawer.draw_right scale=%f", imageScale);
     cv::Mat im;
     vector<cv::KeyPoint> vIniKeys; // Initialization: KeyPoints in reference frame
     vector<int> vMatches; // Initialization: correspondeces with reference keypoints
@@ -323,6 +331,8 @@ cv::Mat FrameDrawer::DrawRightFrame(float imageScale)
     cv::Mat imWithInfo;
     DrawTextInfo(im,state, imWithInfo);
 
+    FT_CALC_LOG("frame_drawer.draw_right.end state=%d keypoints=%d tracked=%d tracked_vo=%d",
+                state, static_cast<int>(vCurrentKeys.size()), mnTracked, mnTrackedVO);
     return imWithInfo;
 }
 
@@ -330,6 +340,7 @@ cv::Mat FrameDrawer::DrawRightFrame(float imageScale)
 
 void FrameDrawer::DrawTextInfo(cv::Mat &im, int nState, cv::Mat &imText)
 {
+    FT_CALC_SCOPE();
     stringstream s;
     if(nState==Tracking::NO_IMAGES_YET)
         s << " WAITING FOR IMAGES";
@@ -364,11 +375,13 @@ void FrameDrawer::DrawTextInfo(cv::Mat &im, int nState, cv::Mat &imText)
     im.copyTo(imText.rowRange(0,im.rows).colRange(0,im.cols));
     imText.rowRange(im.rows,imText.rows) = cv::Mat::zeros(textSize.height+10,im.cols,im.type());
     cv::putText(imText,s.str(),cv::Point(5,imText.rows-5),cv::FONT_HERSHEY_PLAIN,1,cv::Scalar(255,255,255),1,8);
+    FT_CALC_LOG("frame_drawer.text_info state=%d width=%d height=%d", nState, im.cols, im.rows);
 
 }
 
 void FrameDrawer::Update(Tracking *pTracker)
 {
+    FT_CALC_SCOPE();
     unique_lock<mutex> lock(mMutex);
     pTracker->mImGray.copyTo(mIm);
     mvCurrentKeys=pTracker->mCurrentFrame.mvKeys;
@@ -434,6 +447,9 @@ void FrameDrawer::Update(Tracking *pTracker)
 
     }
     mState=static_cast<int>(pTracker->mLastProcessedState);
+    FT_CALC_LOG("frame_drawer.update state=%d keypoints=%d local_map_points=%d matched=%d outliers=%d",
+                pTracker->mLastProcessedState, N, static_cast<int>(mvpLocalMap.size()),
+                static_cast<int>(mvpMatchedMPs.size()), static_cast<int>(mvpOutlierMPs.size()));
 }
 
 } //namespace ORB_SLAM

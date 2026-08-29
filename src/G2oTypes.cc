@@ -17,6 +17,7 @@
 */
 
 #include "G2oTypes.h"
+#include "CalculationLogger.h"
 #include "ImuTypes.h"
 #include "Converter.h"
 namespace ORB_SLAM3
@@ -24,6 +25,7 @@ namespace ORB_SLAM3
 
 ImuCamPose::ImuCamPose(KeyFrame *pKF):its(0)
 {
+    FT_CALC_SCOPE();
     // Load IMU pose
     twb = pKF->GetImuPosition().cast<double>();
     Rwb = pKF->GetImuRotation().cast<double>();
@@ -68,10 +70,13 @@ ImuCamPose::ImuCamPose(KeyFrame *pKF):its(0)
     // For posegraph 4DoF
     Rwb0 = Rwb;
     DR.setIdentity();
+    FT_CALC_LOG("g2o.imu_cam_pose.from_keyframe keyframe=%llu cameras=%d body_translation_norm=%f",
+                static_cast<unsigned long long>(pKF->mnId), num_cams, twb.norm());
 }
 
 ImuCamPose::ImuCamPose(Frame *pF):its(0)
 {
+    FT_CALC_SCOPE();
     // Load IMU pose
     twb = pF->GetImuPosition().cast<double>();
     Rwb = pF->GetImuRotation().cast<double>();
@@ -116,10 +121,13 @@ ImuCamPose::ImuCamPose(Frame *pF):its(0)
     // For posegraph 4DoF
     Rwb0 = Rwb;
     DR.setIdentity();
+    FT_CALC_LOG("g2o.imu_cam_pose.from_frame frame=%llu cameras=%d body_translation_norm=%f",
+                static_cast<unsigned long long>(pF->mnId), num_cams, twb.norm());
 }
 
 ImuCamPose::ImuCamPose(Eigen::Matrix3d &_Rwc, Eigen::Vector3d &_twc, KeyFrame* pKF): its(0)
 {
+    FT_CALC_SCOPE();
     // This is only for posegrpah, we do not care about multicamera
     tcw.resize(1);
     Rcw.resize(1);
@@ -143,11 +151,14 @@ ImuCamPose::ImuCamPose(Eigen::Matrix3d &_Rwc, Eigen::Vector3d &_twc, KeyFrame* p
     // For posegraph 4DoF
     Rwb0 = Rwb;
     DR.setIdentity();
+    FT_CALC_LOG("g2o.imu_cam_pose.pose_graph keyframe=%llu body_translation_norm=%f",
+                static_cast<unsigned long long>(pKF->mnId), twb.norm());
 }
 
 void ImuCamPose::SetParam(const std::vector<Eigen::Matrix3d> &_Rcw, const std::vector<Eigen::Vector3d> &_tcw, const std::vector<Eigen::Matrix3d> &_Rbc,
               const std::vector<Eigen::Vector3d> &_tbc, const double &_bf)
 {
+    FT_CALC_SCOPE();
     Rbc = _Rbc;
     tbc = _tbc;
     Rcw = _Rcw;
@@ -165,6 +176,8 @@ void ImuCamPose::SetParam(const std::vector<Eigen::Matrix3d> &_Rcw, const std::v
     twb = Rcw[0].transpose()*(tcb[0]-tcw[0]);
 
     bf = _bf;
+    FT_CALC_LOG("g2o.imu_cam_pose.set_param cameras=%d baseline_times_focal=%f body_translation_norm=%f",
+                num_cams, bf, twb.norm());
 }
 
 Eigen::Vector2d ImuCamPose::Project(const Eigen::Vector3d &Xw, int cam_idx) const
@@ -191,6 +204,7 @@ bool ImuCamPose::isDepthPositive(const Eigen::Vector3d &Xw, int cam_idx) const
 
 void ImuCamPose::Update(const double *pu)
 {
+    FT_CALC_SCOPE();
     Eigen::Vector3d ur, ut;
     ur << pu[0], pu[1], pu[2];
     ut << pu[3], pu[4], pu[5];
@@ -217,10 +231,14 @@ void ImuCamPose::Update(const double *pu)
         tcw[i] = Rcb[i] * tbw + tcb[i];
     }
 
+    FT_CALC_LOG("g2o.imu_cam_pose.update cameras=%d rotation_increment_norm=%f translation_increment_norm=%f",
+                static_cast<int>(pCamera.size()), ur.norm(), ut.norm());
+
 }
 
 void ImuCamPose::UpdateW(const double *pu)
 {
+    FT_CALC_SCOPE();
     Eigen::Vector3d ur, ut;
     ur << pu[0], pu[1], pu[2];
     ut << pu[3], pu[4], pu[5];
@@ -253,21 +271,29 @@ void ImuCamPose::UpdateW(const double *pu)
         Rcw[i] = Rcb[i] * Rbw;
         tcw[i] = Rcb[i] * tbw+tcb[i];
     }
+    FT_CALC_LOG("g2o.imu_cam_pose.update_world cameras=%d rotation_increment_norm=%f translation_increment_norm=%f",
+                static_cast<int>(pCamera.size()), ur.norm(), ut.norm());
 }
 
 InvDepthPoint::InvDepthPoint(double _rho, double _u, double _v, KeyFrame* pHostKF): u(_u), v(_v), rho(_rho),
     fx(pHostKF->fx), fy(pHostKF->fy), cx(pHostKF->cx), cy(pHostKF->cy), bf(pHostKF->mbf)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("g2o.inverse_depth.construct host_keyframe=%llu rho=%f u=%f v=%f",
+                static_cast<unsigned long long>(pHostKF->mnId), rho, u, v);
 }
 
 void InvDepthPoint::Update(const double *pu)
 {
+    FT_CALC_SCOPE();
     rho += *pu;
+    FT_CALC_LOG("g2o.inverse_depth.update rho=%f delta=%f", rho, *pu);
 }
 
 
 bool VertexPose::read(std::istream& is)
 {
+    FT_CALC_SCOPE();
     std::vector<Eigen::Matrix<double,3,3> > Rcw;
     std::vector<Eigen::Matrix<double,3,1> > tcw;
     std::vector<Eigen::Matrix<double,3,3> > Rbc;
@@ -303,7 +329,7 @@ bool VertexPose::read(std::istream& is)
     is >> bf;
     _estimate.SetParam(Rcw,tcw,Rbc,tbc,bf);
     updateCache();
-    
+    FT_CALC_LOG("g2o.vertex_pose.read cameras=%d baseline_times_focal=%f", num_cams, _estimate.bf);
     return true;
 }
 
@@ -493,6 +519,7 @@ EdgeInertial::EdgeInertial(IMU::Preintegrated *pInt):JRg(pInt->JRg.cast<double>(
     JVg(pInt->JVg.cast<double>()), JPg(pInt->JPg.cast<double>()), JVa(pInt->JVa.cast<double>()),
     JPa(pInt->JPa.cast<double>()), mpInt(pInt), dt(pInt->dT)
 {
+    FT_CALC_SCOPE();
     // This edge links 6 vertices
     resize(6);
     g << 0, 0, -IMU::GRAVITY_VALUE;
@@ -506,6 +533,7 @@ EdgeInertial::EdgeInertial(IMU::Preintegrated *pInt):JRg(pInt->JRg.cast<double>(
             eigs[i]=0;
     Info = es.eigenvectors()*eigs.asDiagonal()*es.eigenvectors().transpose();
     setInformation(Info);
+    FT_CALC_LOG("g2o.edge_inertial.construct dt=%f covariance_trace=%f", dt, pInt->C.block<9,9>(0,0).trace());
 }
 
 
@@ -513,6 +541,7 @@ EdgeInertial::EdgeInertial(IMU::Preintegrated *pInt):JRg(pInt->JRg.cast<double>(
 
 void EdgeInertial::computeError()
 {
+    FT_CALC_SCOPE();
     // TODO Maybe Reintegrate inertial measurments when difference between linearization point and current estimate is too big
     const VertexPose* VP1 = static_cast<const VertexPose*>(_vertices[0]);
     const VertexVelocity* VV1= static_cast<const VertexVelocity*>(_vertices[1]);
@@ -531,6 +560,8 @@ void EdgeInertial::computeError()
                                                                - VV1->estimate()*dt - g*dt*dt/2) - dP;
 
     _error << er, ev, ep;
+    FT_CALC_LOG("g2o.edge_inertial.error dt=%f rotation_norm=%f velocity_norm=%f position_norm=%f total_norm=%f",
+                dt, er.norm(), ev.norm(), ep.norm(), _error.norm());
 }
 
 void EdgeInertial::linearizeOplus()
@@ -597,6 +628,7 @@ EdgeInertialGS::EdgeInertialGS(IMU::Preintegrated *pInt):JRg(pInt->JRg.cast<doub
     JVg(pInt->JVg.cast<double>()), JPg(pInt->JPg.cast<double>()), JVa(pInt->JVa.cast<double>()),
     JPa(pInt->JPa.cast<double>()), mpInt(pInt), dt(pInt->dT)
 {
+    FT_CALC_SCOPE();
     // This edge links 8 vertices
     resize(8);
     gI << 0, 0, -IMU::GRAVITY_VALUE;
@@ -610,12 +642,15 @@ EdgeInertialGS::EdgeInertialGS(IMU::Preintegrated *pInt):JRg(pInt->JRg.cast<doub
             eigs[i]=0;
     Info = es.eigenvectors()*eigs.asDiagonal()*es.eigenvectors().transpose();
     setInformation(Info);
+    FT_CALC_LOG("g2o.edge_inertial_global_scale.construct dt=%f covariance_trace=%f", dt,
+                pInt->C.block<9,9>(0,0).trace());
 }
 
 
 
 void EdgeInertialGS::computeError()
 {
+    FT_CALC_SCOPE();
     // TODO Maybe Reintegrate inertial measurments when difference between linearization point and current estimate is too big
     const VertexPose* VP1 = static_cast<const VertexPose*>(_vertices[0]);
     const VertexVelocity* VV1= static_cast<const VertexVelocity*>(_vertices[1]);
@@ -637,6 +672,8 @@ void EdgeInertialGS::computeError()
     const Eigen::Vector3d ep = VP1->estimate().Rwb.transpose()*(s*(VP2->estimate().twb - VP1->estimate().twb - VV1->estimate()*dt) - g*dt*dt/2) - dP;
 
     _error << er, ev, ep;
+    FT_CALC_LOG("g2o.edge_inertial_global_scale.error dt=%f scale=%f rotation_norm=%f velocity_norm=%f position_norm=%f total_norm=%f",
+                dt, s, er.norm(), ev.norm(), ep.norm(), _error.norm());
 }
 
 void EdgeInertialGS::linearizeOplus()
@@ -719,6 +756,7 @@ void EdgeInertialGS::linearizeOplus()
 
 EdgePriorPoseImu::EdgePriorPoseImu(ConstraintPoseImu *c)
 {
+    FT_CALC_SCOPE();
     resize(4);
     Rwb = c->Rwb;
     twb = c->twb;
@@ -730,6 +768,7 @@ EdgePriorPoseImu::EdgePriorPoseImu(ConstraintPoseImu *c)
 
 void EdgePriorPoseImu::computeError()
 {
+    FT_CALC_SCOPE();
     const VertexPose* VP = static_cast<const VertexPose*>(_vertices[0]);
     const VertexVelocity* VV = static_cast<const VertexVelocity*>(_vertices[1]);
     const VertexGyroBias* VG = static_cast<const VertexGyroBias*>(_vertices[2]);
@@ -742,6 +781,8 @@ void EdgePriorPoseImu::computeError()
     const Eigen::Vector3d eba = VA->estimate() - ba;
 
     _error << er, et, ev, ebg, eba;
+    FT_CALC_LOG("g2o.edge_prior_imu.error pose_norm=%f velocity_norm=%f gyro_bias_norm=%f acc_bias_norm=%f total_norm=%f",
+                (er.norm() + et.norm()), ev.norm(), ebg.norm(), eba.norm(), _error.norm());
 }
 
 void EdgePriorPoseImu::linearizeOplus()

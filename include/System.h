@@ -40,6 +40,7 @@
 #include "ImuTypes.h"
 #include "Settings.h"
 #include "Stats/TrackingStats.h"
+#include "CalculationLogApi.h"
 
 
 namespace ORB_SLAM3
@@ -63,7 +64,7 @@ public:
     static void PrintMess(std::string str, eLevel lev)
     {
         if(lev <= th)
-            cout << str << endl;
+            CalculationLog::text(str.c_str());
     }
 
     static void SetTh(eLevel _th)

@@ -9,10 +9,10 @@
 */
 
 #include <cuda.h>
-#include <iostream>
 
 #include "ORBextractor.h"
 
+#include "CalculationLogApi.h"
 #include "orientation.h"
 
 // __device__ __constant__ int HALF_PATCH_SIZE_GPU;
@@ -90,5 +90,7 @@ void compute_orientation(uchar *images, uchar *inputImage, ORB_SLAM3::GpuPoint *
     dim3 dg( ceil( (float)maxPointsLevel/128 ), ceil((float)maxLevel/8) );
     dim3 db( 128, 8 );
 
+    ORB_SLAM3::CalculationLog::textf("cuda.orientation.launch rows=%d cols=%d levels=%d max_points_level=%d image_step=%d grid=%ux%u block=%ux%u",
+                                     rows, cols, maxLevel, maxPointsLevel, inputImageStep, dg.x, dg.y, db.x, db.y);
     compute_orientation_kernel<<<dg, db, 0, cudaStream>>>(images, inputImage, points, sizes, umax, inputImageStep, maxLevel, mvScaleFactor, cols, rows, maxPointsLevel);
 }

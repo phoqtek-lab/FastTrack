@@ -1,4 +1,5 @@
 #include "Kernels/CudaUtils.h"
+#include "CalculationLogApi.h"
 
 int CudaUtils::nFeatures_with_th;
 int CudaUtils::nLevels; 
@@ -17,12 +18,16 @@ int CudaUtils::maxCandidatesPerLevel = 16384;
 
 void checkCudaError(cudaError_t err, const char* msg) {
     if (err != cudaSuccess) {
-        std::cerr << msg << ": " << cudaGetErrorString(err) << ", status code: " << err << std::endl;
+        ORB_SLAM3::CalculationLog::textf("cuda.error message=%s detail=%s status=%d",
+                                         msg, cudaGetErrorString(err), static_cast<int>(err));
         exit(EXIT_FAILURE);
     }
 }
 
 void CudaUtils::loadSetting(int _nFeatures, int _nLevels, bool _isMonocular, float _scaleFactor, int _nCols, int _nRows, bool _cameraIsFisheye){
+    ORB_SLAM3::CalculationLog::textf("cuda.settings.begin features=%d levels=%d monocular=%d scale_factor=%f cols=%d rows=%d fisheye=%d",
+                                     _nFeatures, _nLevels, _isMonocular ? 1 : 0, _scaleFactor,
+                                     _nCols, _nRows, _cameraIsFisheye ? 1 : 0);
     nFeatures_with_th = _nFeatures + N_FEATURES_TH;
     nLevels = _nLevels;
     isMonocular = _isMonocular;
@@ -41,9 +46,12 @@ void CudaUtils::loadSetting(int _nFeatures, int _nLevels, bool _isMonocular, flo
     }
     checkCudaError(cudaMalloc(&d_mvScaleFactors, h_mvScaleFactors.size() * sizeof(float)), "CudaUtils:: Failed to allocate memory for d_mvScaleFactors");
     checkCudaError(cudaMemcpy(d_mvScaleFactors, h_mvScaleFactors.data(), h_mvScaleFactors.size() * sizeof(float), cudaMemcpyHostToDevice),"CudaUtils:: Failed to initialize d_mvScaleFactors"); 
+    ORB_SLAM3::CalculationLog::textf("cuda.settings.end feature_threshold=%d scale_levels=%d",
+                                     nFeatures_with_th, nLevels);
 }
 
 void CudaUtils::shutdown(){
+    ORB_SLAM3::CalculationLog::text("cuda.settings.shutdown");
     checkCudaError(cudaFree(d_mvScaleFactors),"[CudaUtils::] Failed to free frame memory: d_mvScaleFactors");
 }
 

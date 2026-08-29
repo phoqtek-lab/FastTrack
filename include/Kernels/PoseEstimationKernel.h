@@ -2,12 +2,12 @@
 #define POSE_ESTIMATION_KERNEL_H
 
 #include "KernelInterface.h"
+#include "CalculationLogApi.h"
 #include "CudaWrappers/CudaFrame.h"
 #include "../Frame.h"
 #include "CudaUtils.h"
 #include <map>
 #include <fstream>
-#include <iostream>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -18,7 +18,7 @@ class PoseEstimationKernel: public KernelInterface {
         void initialize() override;
         void shutdown() override;
         void saveStats(const string &file_path) override;
-        void launch() override { cout << "[PoseEstimationKernel:] provide input for kernel launch.\n"; };
+        void launch() override { ORB_SLAM3::CalculationLog::text("pose_estimation.launch.abort reason=no_input"); };
         void launch(ORB_SLAM3::Frame &CurrentFrame, const ORB_SLAM3::Frame &LastFrame,
                     const float th, const bool bForward, const bool bBackward, Eigen::Matrix4f transform_matrix,
                     int* h_bestDist, int* h_bestIdx2, int* h_bestDistR, int* h_bestIdxR2);

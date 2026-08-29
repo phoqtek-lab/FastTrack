@@ -22,6 +22,7 @@
 #include "GeometricCamera.h"
 #include "Pinhole.h"
 #include "KannalaBrandt8.h"
+#include "CalculationLogger.h"
 
 namespace ORB_SLAM3
 {
@@ -57,19 +58,21 @@ Atlas::~Atlas()
 
 void Atlas::CreateNewMap()
 {
+    FT_CALC_SCOPE();
     unique_lock<mutex> lock(mMutexAtlas);
-    cout << "Creation of new map with id: " << Map::nNextId << endl;
+    FT_CALC_LOG("atlas.map.create.begin next_id=%llu previous_current=%d",
+                static_cast<unsigned long long>(Map::nNextId), mpCurrentMap ? 1 : 0);
     if(mpCurrentMap){
         if(!mspMaps.empty() && mnLastInitKFidMap < mpCurrentMap->GetMaxKFid())
             mnLastInitKFidMap = mpCurrentMap->GetMaxKFid()+1; //The init KF is the next of current maximum
 
         mpCurrentMap->SetStoredMap();
-        cout << "Stored map with ID: " << mpCurrentMap->GetId() << endl;
+        FT_CALC_LOG("atlas.map.store id=%llu", static_cast<unsigned long long>(mpCurrentMap->GetId()));
 
         //if(mHasViewer)
         //    mpViewer->AddMapToCreateThumbnail(mpCurrentMap);
     }
-    cout << "Creation of new map with last KF id: " << mnLastInitKFidMap << endl;
+    FT_CALC_LOG("atlas.map.create.init_keyframe_id=%llu", mnLastInitKFidMap);
 
     mpCurrentMap = new Map(mnLastInitKFidMap);
     mpCurrentMap->SetCurrentMap();
@@ -78,8 +81,14 @@ void Atlas::CreateNewMap()
 
 void Atlas::ChangeMap(Map* pMap)
 {
+    FT_CALC_SCOPE();
     unique_lock<mutex> lock(mMutexAtlas);
-    cout << "Change to map with id: " << pMap->GetId() << endl;
+    if(!pMap)
+    {
+        FT_CALC_LOG("atlas.map.change.abort reason=null_map");
+        return;
+    }
+    FT_CALC_LOG("atlas.map.change id=%llu", static_cast<unsigned long long>(pMap->GetId()));
     if(mpCurrentMap){
         mpCurrentMap->SetStoredMap();
     }
@@ -114,14 +123,24 @@ void Atlas::AddMapPoint(MapPoint* pMP)
 
 GeometricCamera* Atlas::AddCamera(GeometricCamera* pCam)
 {
+    FT_CALC_SCOPE();
+    if(!pCam)
+    {
+        FT_CALC_LOG("atlas.camera.add.abort reason=null_camera");
+        return nullptr;
+    }
     //Check if the camera already exists
     bool bAlreadyInMap = false;
     int index_cam = -1;
     for(size_t i=0; i < mvpCameras.size(); ++i)
     {
         GeometricCamera* pCam_i = mvpCameras[i];
-        if(!pCam) std::cout << "Not pCam" << std::endl;
-        if(!pCam_i) std::cout << "Not pCam_i" << std::endl;
+        if(!pCam_i)
+        {
+            FT_CALC_LOG("atlas.camera.add.warning index=%llu reason=null_existing_camera",
+                        static_cast<unsigned long long>(i));
+            continue;
+        }
         if(pCam->GetType() != pCam_i->GetType())
             continue;
 
@@ -145,10 +164,14 @@ GeometricCamera* Atlas::AddCamera(GeometricCamera* pCam)
 
     if(bAlreadyInMap)
     {
+        FT_CALC_LOG("atlas.camera.add.reused id=%llu", static_cast<unsigned long long>(mvpCameras[index_cam]->GetId()));
         return mvpCameras[index_cam];
     }
     else{
         mvpCameras.push_back(pCam);
+        FT_CALC_LOG("atlas.camera.add.created id=%llu total=%llu",
+                    static_cast<unsigned long long>(pCam->GetId()),
+                    static_cast<unsigned long long>(mvpCameras.size()));
         return pCam;
     }
 }

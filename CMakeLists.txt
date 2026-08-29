@@ -45,7 +45,53 @@ MESSAGE(STATUS "Found OpenCV Version: ${OpenCV_VERSION}")
 find_package(Eigen3 3.1.0 REQUIRED)
 find_package(Pangolin REQUIRED)
 find_package(OpenMP REQUIRED)
+find_package(Threads REQUIRED)
 find_package(realsense2)
+
+set(FASTTRACK_CUDA_INCLUDE_DIR "/home/fci/Desktop/jetson_cuda_includes" CACHE PATH
+    "Fallback CUDA host headers copied from the Jetson when toolkit headers are unavailable")
+if(EXISTS "${FASTTRACK_CUDA_INCLUDE_DIR}/cuda.h")
+  message(STATUS "Using FastTrack CUDA host headers from ${FASTTRACK_CUDA_INCLUDE_DIR}")
+  include_directories("${FASTTRACK_CUDA_INCLUDE_DIR}")
+  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -I${FASTTRACK_CUDA_INCLUDE_DIR}")
+endif()
+
+set(GARUDANAV_SYSTEM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../garudanav_system" CACHE PATH
+    "garudanav_system checkout providing the reviewed NanoLog runtime")
+set(GARUDANAV_NANOLOG_RUNTIME_DIR "${GARUDANAV_SYSTEM_DIR}/third_party/nanolog/runtime")
+if(NOT EXISTS "${GARUDANAV_NANOLOG_RUNTIME_DIR}/NanoLogCpp17.h")
+  message(FATAL_ERROR
+    "NanoLog runtime not found under ${GARUDANAV_NANOLOG_RUNTIME_DIR}; "
+    "set GARUDANAV_SYSTEM_DIR to the garudanav_system checkout")
+endif()
+
+add_library(fasttrack_nanolog_runtime STATIC
+  "${GARUDANAV_NANOLOG_RUNTIME_DIR}/Log.cc"
+  "${GARUDANAV_NANOLOG_RUNTIME_DIR}/RuntimeLogger.cc"
+  "${GARUDANAV_NANOLOG_RUNTIME_DIR}/NanoLog.cc"
+  "${GARUDANAV_NANOLOG_RUNTIME_DIR}/Cycles.cc"
+  "${GARUDANAV_NANOLOG_RUNTIME_DIR}/Util.cc"
+  "${GARUDANAV_NANOLOG_RUNTIME_DIR}/TimeTrace.cc"
+  "${GARUDANAV_NANOLOG_RUNTIME_DIR}/Perf.cc"
+  "${GARUDANAV_NANOLOG_RUNTIME_DIR}/PerfHelper.cc"
+  "${GARUDANAV_SYSTEM_DIR}/src/nanolog_stubs.cc"
+)
+set_target_properties(fasttrack_nanolog_runtime PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(fasttrack_nanolog_runtime PUBLIC "${GARUDANAV_NANOLOG_RUNTIME_DIR}")
+target_compile_features(fasttrack_nanolog_runtime PUBLIC cxx_std_17)
+target_compile_options(fasttrack_nanolog_runtime PRIVATE
+  -Wno-sign-compare
+  -Wno-unused-parameter
+  -Wno-reorder
+  -Wno-format-truncation
+  -Wno-volatile
+)
+target_link_libraries(fasttrack_nanolog_runtime PUBLIC Threads::Threads rt)
+
+add_library(fasttrack_calculation_logger STATIC src/CalculationLogger.cc)
+set_target_properties(fasttrack_calculation_logger PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(fasttrack_calculation_logger PUBLIC include)
+target_link_libraries(fasttrack_calculation_logger PUBLIC fasttrack_nanolog_runtime)
 
 include_directories(
   ${PROJECT_SOURCE_DIR}
@@ -110,6 +156,7 @@ set_target_properties(${PROJECT_NAME} PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 add_subdirectory(Thirdparty/g2o)
 
 target_link_libraries(${PROJECT_NAME}
+  fasttrack_calculation_logger
   ${OpenCV_LIBS}
   ${EIGEN3_LIBS}
   ${Pangolin_LIBRARIES}

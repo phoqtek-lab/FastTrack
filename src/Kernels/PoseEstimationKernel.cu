@@ -1,6 +1,7 @@
 #include "Kernels/PoseEstimationKernel.h"
 
 void PoseEstimationKernel::initialize(){
+    ORB_SLAM3::CalculationLog::text("cuda.pose_estimation.initialize.begin");
     if (memory_is_initialized){
         return;
     }
@@ -20,13 +21,16 @@ void PoseEstimationKernel::initialize(){
     checkCudaError(cudaMalloc((void**)&d_bestIdxR2, Nfeatures * sizeof(int)), "Failed to allocate memory for d_bestIdxR2"); 
 
     memory_is_initialized = true;
+    ORB_SLAM3::CalculationLog::text("cuda.pose_estimation.initialize.end");
 }
 
 void PoseEstimationKernel::setCurrentFrame(DATA_WRAPPER::CudaFrame* cudaFrame) {
+    ORB_SLAM3::CalculationLog::text("cuda.pose_estimation.current_frame.copy");
     checkCudaError(cudaMemcpy(d_currentFrame, cudaFrame, sizeof(DATA_WRAPPER::CudaFrame), cudaMemcpyHostToDevice), "Failed to copy Current Frame to device");
 }
 
 void PoseEstimationKernel::setLastFrame(DATA_WRAPPER::CudaFrame* cudaFrame) {
+    ORB_SLAM3::CalculationLog::text("cuda.pose_estimation.last_frame.copy");
     checkCudaError(cudaMemcpy(d_lastFrame, cudaFrame, sizeof(DATA_WRAPPER::CudaFrame), cudaMemcpyHostToDevice), "Failed to copy Last Frame to device");
 }
 
@@ -350,6 +354,10 @@ __global__ void searchByProjectionKernel(DATA_WRAPPER::CudaFrame *d_currentFrame
 void PoseEstimationKernel::launch(ORB_SLAM3::Frame &CurrentFrame, const ORB_SLAM3::Frame &LastFrame,
                                 const float th, const bool bForward, const bool bBackward, Eigen::Matrix4f transform_matrix,
                                 int* h_bestDist, int* h_bestIdx2, int* h_bestDistR, int* h_bestIdxR2){
+    ORB_SLAM3::CalculationLog::textf("cuda.pose_estimation.launch.begin current=%llu last=%llu threshold=%f forward=%d backward=%d",
+                                     static_cast<unsigned long long>(CurrentFrame.mnId),
+                                     static_cast<unsigned long long>(LastFrame.mnId), th,
+                                     bForward ? 1 : 0, bBackward ? 1 : 0);
 
 #ifdef REGISTER_STATS
     std::chrono::steady_clock::time_point startTotal = std::chrono::steady_clock::now();
@@ -401,6 +409,7 @@ void PoseEstimationKernel::launch(ORB_SLAM3::Frame &CurrentFrame, const ORB_SLAM
 }
 
 void PoseEstimationKernel::shutdown(){
+    ORB_SLAM3::CalculationLog::text("cuda.pose_estimation.shutdown.begin");
     if(!memory_is_initialized)
         return;
     cudaFree(d_currentFrame);
@@ -409,14 +418,16 @@ void PoseEstimationKernel::shutdown(){
     cudaFree(d_bestIdx2);
     cudaFree(d_bestDistR);
     cudaFree(d_bestIdxR2);
+    ORB_SLAM3::CalculationLog::text("cuda.pose_estimation.shutdown.end");
 }
 
 void PoseEstimationKernel::saveStats(const string &file_path){
 
     string data_path = file_path + "/PoseEstimationKernel/";
-    cout << "[PoseEstimationKernel:] writing stats data into file: " << data_path << '\n';
+    ORB_SLAM3::CalculationLog::textf("cuda.pose_estimation.stats.save path=%s", data_path.c_str());
     if (mkdir(data_path.c_str(), 0755) == -1) {
-        std::cerr << "[PoseEstimationKernel:] Error creating directory: " << strerror(errno) << std::endl;
+        ORB_SLAM3::CalculationLog::textf("cuda.pose_estimation.stats.directory_failed path=%s errno=%d",
+                                         data_path.c_str(), errno);
     }
 
     ofstream myfile;

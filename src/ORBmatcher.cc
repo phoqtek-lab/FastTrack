@@ -31,6 +31,7 @@
 
 #include "Kernels/KernelController.h"
 #include "Stats/TrackingStats.h"
+#include "CalculationLogger.h"
 
 using namespace std;
 
@@ -44,10 +45,17 @@ namespace ORB_SLAM3
 
     ORBmatcher::ORBmatcher(float nnratio, bool checkOri): mfNNratio(nnratio), mbCheckOrientation(checkOri)
     {
+        FT_CALC_SCOPE();
+        FT_CALC_LOG("matcher.construct ratio=%f orientation=%d", nnratio, checkOri ? 1 : 0);
     }
 
     int ORBmatcher::SearchByProjection(Frame &F, const vector<MapPoint*> &vpMapPoints, const float th, const bool bFarPoints, const float thFarPoints)
     {
+        FT_CALC_SCOPE();
+        FT_CALC_LOG("matcher.projection_frame.begin frame=%llu points=%llu threshold=%f far_points=%d far_threshold=%f gpu=%d",
+                    static_cast<unsigned long long>(F.mnId),
+                    static_cast<unsigned long long>(vpMapPoints.size()), th, bFarPoints ? 1 : 0,
+                    thFarPoints, KernelController::searchLocalPointsKernelRunStatus);
 
         int numPoints = vpMapPoints.size();
 
@@ -321,6 +329,10 @@ namespace ORB_SLAM3
 
     int ORBmatcher::SearchByBoW(KeyFrame* pKF,Frame &F, vector<MapPoint*> &vpMapPointMatches)
     {
+        FT_CALC_SCOPE();
+        FT_CALC_LOG("matcher.bow_frame.begin keyframe=%llu frame=%llu features=%d",
+                    static_cast<unsigned long long>(pKF->mnId),
+                    static_cast<unsigned long long>(F.mnId), F.N);
         const vector<MapPoint*> vpMapPointsKF = pKF->GetMapPointMatches();
 
         vpMapPointMatches = vector<MapPoint*>(F.N,static_cast<MapPoint*>(NULL));
@@ -526,6 +538,10 @@ namespace ORB_SLAM3
     int ORBmatcher::SearchByProjection(KeyFrame* pKF, Sophus::Sim3f &Scw, const vector<MapPoint*> &vpPoints,
                                        vector<MapPoint*> &vpMatched, int th, float ratioHamming)
     {
+        FT_CALC_SCOPE();
+        FT_CALC_LOG("matcher.projection_sim3.begin keyframe=%llu points=%llu threshold=%d ratio=%f",
+                    static_cast<unsigned long long>(pKF->mnId),
+                    static_cast<unsigned long long>(vpPoints.size()), th, ratioHamming);
         // Get Calibration Parameters for later projection
         const float &fx = pKF->fx;
         const float &fy = pKF->fy;
@@ -633,6 +649,11 @@ namespace ORB_SLAM3
     int ORBmatcher::SearchByProjection(KeyFrame* pKF, Sophus::Sim3<float> &Scw, const std::vector<MapPoint*> &vpPoints, const std::vector<KeyFrame*> &vpPointsKFs,
                                        std::vector<MapPoint*> &vpMatched, std::vector<KeyFrame*> &vpMatchedKF, int th, float ratioHamming)
     {
+        FT_CALC_SCOPE();
+        FT_CALC_LOG("matcher.projection_sim3_hosts.begin keyframe=%llu points=%llu hosts=%llu threshold=%d ratio=%f",
+                    static_cast<unsigned long long>(pKF->mnId),
+                    static_cast<unsigned long long>(vpPoints.size()),
+                    static_cast<unsigned long long>(vpPointsKFs.size()), th, ratioHamming);
         // Get Calibration Parameters for later projection
         const float &fx = pKF->fx;
         const float &fy = pKF->fy;
@@ -746,6 +767,10 @@ namespace ORB_SLAM3
 
     int ORBmatcher::SearchForInitialization(Frame &F1, Frame &F2, vector<cv::Point2f> &vbPrevMatched, vector<int> &vnMatches12, int windowSize)
     {
+        FT_CALC_SCOPE();
+        FT_CALC_LOG("matcher.initialization.begin frame1=%llu frame2=%llu features1=%d features2=%d window=%d",
+                    static_cast<unsigned long long>(F1.mnId), static_cast<unsigned long long>(F2.mnId),
+                    F1.N, F2.N, windowSize);
         int nmatches=0;
         vnMatches12 = vector<int>(F1.mvKeysUn.size(),-1);
 
@@ -863,6 +888,10 @@ namespace ORB_SLAM3
 
     int ORBmatcher::SearchByBoW(KeyFrame *pKF1, KeyFrame *pKF2, vector<MapPoint *> &vpMatches12)
     {
+        FT_CALC_SCOPE();
+        FT_CALC_LOG("matcher.bow_keyframes.begin keyframe1=%llu keyframe2=%llu",
+                    static_cast<unsigned long long>(pKF1->mnId),
+                    static_cast<unsigned long long>(pKF2->mnId));
         const vector<cv::KeyPoint> &vKeysUn1 = pKF1->mvKeysUn;
         const DBoW2::FeatureVector &vFeatVec1 = pKF1->mFeatVec;
         const vector<MapPoint*> vpMapPoints1 = pKF1->GetMapPointMatches();
@@ -1006,6 +1035,10 @@ namespace ORB_SLAM3
     int ORBmatcher::SearchForTriangulation(KeyFrame *pKF1, KeyFrame *pKF2,
                                            vector<pair<size_t, size_t> > &vMatchedPairs, const bool bOnlyStereo, const bool bCoarse)
     {
+        FT_CALC_SCOPE();
+        FT_CALC_LOG("matcher.triangulation.begin keyframe1=%llu keyframe2=%llu stereo_only=%d coarse=%d",
+                    static_cast<unsigned long long>(pKF1->mnId),
+                    static_cast<unsigned long long>(pKF2->mnId), bOnlyStereo ? 1 : 0, bCoarse ? 1 : 0);
         const DBoW2::FeatureVector &vFeatVec1 = pKF1->mFeatVec;
         const DBoW2::FeatureVector &vFeatVec2 = pKF2->mFeatVec;
 
@@ -1246,6 +1279,10 @@ namespace ORB_SLAM3
 
     int ORBmatcher::Fuse(KeyFrame *pKF, const vector<MapPoint *> &vpMapPoints, const float th, const bool bRight)
     {
+        FT_CALC_SCOPE();
+        FT_CALC_LOG("matcher.fuse.begin keyframe=%llu points=%llu threshold=%f right=%d",
+                    static_cast<unsigned long long>(pKF->mnId),
+                    static_cast<unsigned long long>(vpMapPoints.size()), th, bRight ? 1 : 0);
         GeometricCamera* pCamera;
         Sophus::SE3f Tcw;
         Eigen::Vector3f Ow;
@@ -1438,6 +1475,10 @@ namespace ORB_SLAM3
 
     int ORBmatcher::Fuse(KeyFrame *pKF, Sophus::Sim3f &Scw, const vector<MapPoint *> &vpPoints, float th, vector<MapPoint *> &vpReplacePoint)
     {
+        FT_CALC_SCOPE();
+        FT_CALC_LOG("matcher.fuse_sim3.begin keyframe=%llu points=%llu threshold=%f",
+                    static_cast<unsigned long long>(pKF->mnId),
+                    static_cast<unsigned long long>(vpPoints.size()), th);
         // Get Calibration Parameters for later projection
         const float &fx = pKF->fx;
         const float &fy = pKF->fy;
@@ -1555,6 +1596,11 @@ namespace ORB_SLAM3
 
     int ORBmatcher::SearchBySim3(KeyFrame* pKF1, KeyFrame* pKF2, std::vector<MapPoint *> &vpMatches12, const Sophus::Sim3f &S12, const float th)
     {
+        FT_CALC_SCOPE();
+        FT_CALC_LOG("matcher.sim3.begin keyframe1=%llu keyframe2=%llu matches=%llu threshold=%f",
+                    static_cast<unsigned long long>(pKF1->mnId),
+                    static_cast<unsigned long long>(pKF2->mnId),
+                    static_cast<unsigned long long>(vpMatches12.size()), th);
         const float &fx = pKF1->fx;
         const float &fy = pKF1->fy;
         const float &cx = pKF1->cx;
@@ -1774,6 +1820,10 @@ namespace ORB_SLAM3
 
     int ORBmatcher::SearchByProjection(Frame &CurrentFrame, const Frame &LastFrame, const float th, const bool bMono)
     {
+        FT_CALC_SCOPE();
+        FT_CALC_LOG("matcher.projection_motion.begin current=%llu last=%llu threshold=%f mono=%d",
+                    static_cast<unsigned long long>(CurrentFrame.mnId),
+                    static_cast<unsigned long long>(LastFrame.mnId), th, bMono ? 1 : 0);
 
         int nmatches = 0;
 
@@ -2086,6 +2136,11 @@ namespace ORB_SLAM3
 
     int ORBmatcher::SearchByProjection(Frame &CurrentFrame, KeyFrame *pKF, const set<MapPoint*> &sAlreadyFound, const float th , const int ORBdist)
     {
+        FT_CALC_SCOPE();
+        FT_CALC_LOG("matcher.projection_keyframe.begin frame=%llu keyframe=%llu existing=%llu threshold=%f orb_distance=%d",
+                    static_cast<unsigned long long>(CurrentFrame.mnId),
+                    static_cast<unsigned long long>(pKF->mnId),
+                    static_cast<unsigned long long>(sAlreadyFound.size()), th, ORBdist);
         int nmatches = 0;
 
         const Sophus::SE3f Tcw = CurrentFrame.GetPose();

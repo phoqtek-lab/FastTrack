@@ -9,7 +9,6 @@
 */
 
 #include <stdint.h>
-#include <iostream>
 
 #include <cuda.h>
 
@@ -17,6 +16,7 @@
 
 #include "ORBextractor.h"
 
+#include "CalculationLogApi.h"
 #include "fast.h"
 
 #define index(x, y, step) ((y) * (step) + (x))
@@ -566,6 +566,10 @@ void fast_extract( uchar *images, uchar *inputImage, uint8_t th, uint8_t th_low,
 
     dim3 dimBlock(32, 8, 1);
     dim3 dimGrid(ceil((float)cols/dimBlock.x), ceil((float)rows/(dimBlock.y * 4)), maxLevel);
+
+    ORB_SLAM3::CalculationLog::textf("cuda.fast.launch rows=%d cols=%d levels=%d threshold=%u low_threshold=%u candidate_stride=%d grid=%ux%ux%u block=%ux%ux%u",
+                                     rows, cols, maxLevel, static_cast<unsigned int>(th), static_cast<unsigned int>(th_low),
+                                     cand_stride, dimGrid.x, dimGrid.y, dimGrid.z, dimBlock.x, dimBlock.y, dimBlock.z);
 
     cudaMemsetAsync(sizes, 0, sizeof(uint)*maxLevel, cudaStream);
 

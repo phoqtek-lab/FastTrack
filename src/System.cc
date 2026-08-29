@@ -38,6 +38,7 @@
 #include <iostream>
 #include <cstdlib> // For std::exit
 #include "Kernels/KernelController.h"
+#include "CalculationLogger.h"
 
 namespace ORB_SLAM3
 {
@@ -56,39 +57,33 @@ Verbose::eLevel Verbose::th = Verbose::VERBOSITY_NORMAL;
 
 System::System(const string &strVocFile, const string &strSettingsFile, const eSensor sensor,
                const bool bUseViewer, const int initFr, const string &strSequence):
-    mSensor(sensor), mpViewer(static_cast<Viewer*>(NULL)), mbReset(false), mbResetActiveMap(false),
-    mbActivateLocalizationMode(false), mbDeactivateLocalizationMode(false), mbShutDown(false)
+    mSensor(sensor), mpVocabulary(nullptr), mpKeyFrameDatabase(nullptr), mpAtlas(nullptr),
+    mpTracker(nullptr), mpLocalMapper(nullptr), mpLoopCloser(nullptr), mpViewer(nullptr),
+    mpFrameDrawer(nullptr), mpMapDrawer(nullptr), mptLocalMapping(nullptr),
+    mptLoopClosing(nullptr), mptViewer(nullptr), mbReset(false), mbResetActiveMap(false),
+    mbActivateLocalizationMode(false), mbDeactivateLocalizationMode(false), mbShutDown(false),
+    mTrackingState(Tracking::SYSTEM_NOT_READY), settings_(nullptr)
 {
+    CalculationLog::initialize();
+    FT_CALC_SCOPE();
+
     // std::signal(SIGINT, signalHandler);
 
     // Output welcome message
-    cout << endl <<
+    FT_CALC_LOG("system.license orbslam3");
+    /*
     "ORB-SLAM3 Copyright (C) 2017-2020 Carlos Campos, Richard Elvira, Juan J. Gómez, José M.M. Montiel and Juan D. Tardós, University of Zaragoza." << endl <<
     "ORB-SLAM2 Copyright (C) 2014-2016 Raúl Mur-Artal, José M.M. Montiel and Juan D. Tardós, University of Zaragoza." << endl <<
-    "This program comes with ABSOLUTELY NO WARRANTY;" << endl  <<
-    "This is free software, and you are welcome to redistribute it" << endl <<
-    "under certain conditions. See LICENSE.txt." << endl << endl;
+    FT_CALC_LOG("system.license warranty=none");
+    */
 
-    cout << "Input sensor was set to: ";
-
-    if(mSensor==MONOCULAR)
-        cout << "Monocular" << endl;
-    else if(mSensor==STEREO)
-        cout << "Stereo" << endl;
-    else if(mSensor==RGBD)
-        cout << "RGB-D" << endl;
-    else if(mSensor==IMU_MONOCULAR)
-        cout << "Monocular-Inertial" << endl;
-    else if(mSensor==IMU_STEREO)
-        cout << "Stereo-Inertial" << endl;
-    else if(mSensor==IMU_RGBD)
-        cout << "RGB-D-Inertial" << endl;
+    FT_CALC_LOG("system.sensor.selected value=%d", static_cast<int>(mSensor));
 
     //Check settings file
     cv::FileStorage fsSettings(strSettingsFile.c_str(), cv::FileStorage::READ);
     if(!fsSettings.isOpened())
     {
-       cerr << "Failed to open settings file at: " << strSettingsFile << endl;
+       FT_CALC_LOG("system.abort reason=settings_open_failed path=%s", strSettingsFile.c_str());
        exit(-1);
     }
 
@@ -99,7 +94,8 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
         mStrLoadAtlasFromFile = settings_->atlasLoadFile();
         mStrSaveAtlasToFile = settings_->atlasSaveFile();
 
-        cout << (*settings_) << endl;
+        FT_CALC_LOG("system.settings.loaded version=1.0 atlas_load=%s atlas_save=%s",
+                    mStrLoadAtlasFromFile.c_str(), mStrSaveAtlasToFile.c_str());
     }
     else{
         settings_ = nullptr;
@@ -130,53 +126,50 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
     if(mStrLoadAtlasFromFile.empty())
     {
         //Load ORB Vocabulary
-        cout << endl << "Loading ORB Vocabulary. This could take a while..." << endl;
+        FT_CALC_LOG("system.vocabulary.load path=%s", strVocFile.c_str());
 
         mpVocabulary = new ORBVocabulary();
         bool bVocLoad = mpVocabulary->loadFromTextFile(strVocFile);
         if(!bVocLoad)
         {
-            cerr << "Wrong path to vocabulary. " << endl;
-            cerr << "Falied to open at: " << strVocFile << endl;
+            FT_CALC_LOG("system.abort reason=vocabulary_load_failed path=%s", strVocFile.c_str());
             exit(-1);
         }
-        cout << "Vocabulary loaded!" << endl << endl;
+        FT_CALC_LOG("system.vocabulary.loaded");
 
         //Create KeyFrame Database
         mpKeyFrameDatabase = new KeyFrameDatabase(*mpVocabulary);
 
         //Create the Atlas
-        cout << "Initialization of Atlas from scratch " << endl;
+        FT_CALC_LOG("system.atlas.initialize mode=new");
         mpAtlas = new Atlas(0);
     }
     else
     {
         //Load ORB Vocabulary
-        cout << endl << "Loading ORB Vocabulary. This could take a while..." << endl;
+        FT_CALC_LOG("system.vocabulary.load path=%s", strVocFile.c_str());
 
         mpVocabulary = new ORBVocabulary();
         bool bVocLoad = mpVocabulary->loadFromTextFile(strVocFile);
         if(!bVocLoad)
         {
-            cerr << "Wrong path to vocabulary. " << endl;
-            cerr << "Falied to open at: " << strVocFile << endl;
+            FT_CALC_LOG("system.abort reason=vocabulary_load_failed path=%s", strVocFile.c_str());
             exit(-1);
         }
-        cout << "Vocabulary loaded!" << endl << endl;
+        FT_CALC_LOG("system.vocabulary.loaded");
 
         //Create KeyFrame Database
         mpKeyFrameDatabase = new KeyFrameDatabase(*mpVocabulary);
 
-        cout << "Load File" << endl;
+        FT_CALC_LOG("system.atlas.load path=%s", mStrLoadAtlasFromFile.c_str());
 
         // Load the file with an earlier session
         //clock_t start = clock();
-        cout << "Initialization of Atlas from file: " << mStrLoadAtlasFromFile << endl;
         bool isRead = LoadAtlas(FileType::BINARY_FILE);
 
         if(!isRead)
         {
-            cout << "Error to load the file, please try with other session file or vocabulary file" << endl;
+            FT_CALC_LOG("system.abort reason=atlas_load_failed path=%s", mStrLoadAtlasFromFile.c_str());
             exit(-1);
         }
         //mpKeyFrameDatabase = new KeyFrameDatabase(*mpVocabulary);
@@ -205,7 +198,7 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
 
     //Initialize the Tracking thread
     //(it will live in the main thread of execution, the one that called this constructor)
-    cout << "Seq. Name: " << strSequence << endl;
+    FT_CALC_LOG("system.sequence name=%s", strSequence.c_str());
     
     mpTracker = new Tracking(this, mpVocabulary, mpFrameDrawer, mpMapDrawer,
                              mpAtlas, mpKeyFrameDatabase, strSettingsFile, mSensor, settings_, strSequence);
@@ -221,7 +214,7 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
         mpLocalMapper->mThFarPoints = fsSettings["thFarPoints"];
     if(mpLocalMapper->mThFarPoints!=0)
     {
-        cout << "Discard points further than " << mpLocalMapper->mThFarPoints << " m from current camera" << endl;
+        FT_CALC_LOG("system.local_mapping.far_point_threshold=%f", mpLocalMapper->mThFarPoints);
         mpLocalMapper->mbFarPoints = true;
     }
     else
@@ -263,9 +256,13 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
 
 Sophus::SE3f System::TrackStereo(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timestamp, const vector<IMU::Point>& vImuMeas, string filename)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("system.track.stereo.begin timestamp=%f left=%dx%d right=%dx%d imu_samples=%llu",
+                timestamp, imLeft.cols, imLeft.rows, imRight.cols, imRight.rows,
+                static_cast<unsigned long long>(vImuMeas.size()));
     if(mSensor!=STEREO && mSensor!=IMU_STEREO)
     {
-        cerr << "ERROR: you called TrackStereo but input sensor was not set to Stereo nor Stereo-Inertial." << endl;
+        FT_CALC_LOG("system.track.stereo.abort reason=sensor_mismatch sensor=%d", static_cast<int>(mSensor));
         exit(-1);
     }
 
@@ -332,24 +329,29 @@ Sophus::SE3f System::TrackStereo(const cv::Mat &imLeft, const cv::Mat &imRight, 
         for(size_t i_imu = 0; i_imu < vImuMeas.size(); i_imu++)
             mpTracker->GrabImuData(vImuMeas[i_imu]);
 
-    // std::cout << "start GrabImageStereo" << std::endl;
     Sophus::SE3f Tcw = mpTracker->GrabImageStereo(imLeftToFeed,imRightToFeed,timestamp,filename);
-
-    // std::cout << "out grabber" << std::endl;
 
     unique_lock<mutex> lock2(mMutexState);
     mTrackingState = mpTracker->mState;
     mTrackedMapPoints = mpTracker->mCurrentFrame.mvpMapPoints;
     mTrackedKeyPointsUn = mpTracker->mCurrentFrame.mvKeysUn;
 
+    FT_CALC_LOG("system.track.stereo.end state=%d tracked_points=%llu keypoints=%llu",
+                mTrackingState, static_cast<unsigned long long>(mTrackedMapPoints.size()),
+                static_cast<unsigned long long>(mTrackedKeyPointsUn.size()));
+
     return Tcw;
 }
 
 Sophus::SE3f System::TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const double &timestamp, const vector<IMU::Point>& vImuMeas, string filename)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("system.track.rgbd.begin timestamp=%f image=%dx%d depth=%dx%d imu_samples=%llu",
+                timestamp, im.cols, im.rows, depthmap.cols, depthmap.rows,
+                static_cast<unsigned long long>(vImuMeas.size()));
     if(mSensor!=RGBD  && mSensor!=IMU_RGBD)
     {
-        cerr << "ERROR: you called TrackRGBD but input sensor was not set to RGBD." << endl;
+        FT_CALC_LOG("system.track.rgbd.abort reason=sensor_mismatch sensor=%d", static_cast<int>(mSensor));
         exit(-1);
     }
 
@@ -413,11 +415,17 @@ Sophus::SE3f System::TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const
     mTrackingState = mpTracker->mState;
     mTrackedMapPoints = mpTracker->mCurrentFrame.mvpMapPoints;
     mTrackedKeyPointsUn = mpTracker->mCurrentFrame.mvKeysUn;
+    FT_CALC_LOG("system.track.rgbd.end state=%d tracked_points=%llu keypoints=%llu",
+                mTrackingState, static_cast<unsigned long long>(mTrackedMapPoints.size()),
+                static_cast<unsigned long long>(mTrackedKeyPointsUn.size()));
     return Tcw;
 }
 
 Sophus::SE3f System::TrackMonocular(const cv::Mat &im, const double &timestamp, const vector<IMU::Point>& vImuMeas, string filename)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("system.track.monocular.begin timestamp=%f image=%dx%d imu_samples=%llu",
+                timestamp, im.cols, im.rows, static_cast<unsigned long long>(vImuMeas.size()));
 
     {
         unique_lock<mutex> lock(mMutexReset);
@@ -427,7 +435,7 @@ Sophus::SE3f System::TrackMonocular(const cv::Mat &im, const double &timestamp, 
 
     if(mSensor!=MONOCULAR && mSensor!=IMU_MONOCULAR)
     {
-        cerr << "ERROR: you called TrackMonocular but input sensor was not set to Monocular nor Monocular-Inertial." << endl;
+        FT_CALC_LOG("system.track.monocular.abort reason=sensor_mismatch sensor=%d", static_cast<int>(mSensor));
         exit(-1);
     }
 
@@ -473,7 +481,7 @@ Sophus::SE3f System::TrackMonocular(const cv::Mat &im, const double &timestamp, 
         }
         else if(mbResetActiveMap)
         {
-            cout << "SYSTEM-> Reseting active map in monocular case" << endl;
+            FT_CALC_LOG("system.track.monocular.reset_active_map");
             mpTracker->ResetActiveMap();
             mbResetActiveMap = false;
         }
@@ -489,6 +497,9 @@ Sophus::SE3f System::TrackMonocular(const cv::Mat &im, const double &timestamp, 
     mTrackingState = mpTracker->mState;
     mTrackedMapPoints = mpTracker->mCurrentFrame.mvpMapPoints;
     mTrackedKeyPointsUn = mpTracker->mCurrentFrame.mvKeysUn;
+    FT_CALC_LOG("system.track.monocular.end state=%d tracked_points=%llu keypoints=%llu",
+                mTrackingState, static_cast<unsigned long long>(mTrackedMapPoints.size()),
+                static_cast<unsigned long long>(mTrackedKeyPointsUn.size()));
 
     return Tcw;
 }
@@ -536,36 +547,39 @@ void System::Shutdown()
 {
     {
         unique_lock<mutex> lock(mMutexReset);
+        if(mbShutDown)
+            return;
         mbShutDown = true;
     }
 
-    cout << "Shutdown" << endl;
+    FT_CALC_NOTICE("system.shutdown.requested");
 
     mpLocalMapper->RequestFinish();
     mpLoopCloser->RequestFinish();
-    KernelController::shutdownKernels();
 
-    /*if(mpViewer)
+    if(mpViewer)
     {
         mpViewer->RequestFinish();
-        while(!mpViewer->isFinished())
-            usleep(5000);
-    }*/
+    }
 
-    // Wait until all thread have effectively stopped
-    /*while(!mpLocalMapper->isFinished() || !mpLoopCloser->isFinished() || mpLoopCloser->isRunningGBA())
-    {
-        if(!mpLocalMapper->isFinished())
-            cout << "mpLocalMapper is not finished" << endl;*/
-        /*if(!mpLoopCloser->isFinished())
-            cout << "mpLoopCloser is not finished" << endl;
-        if(mpLoopCloser->isRunningGBA()){
-            cout << "mpLoopCloser is running GBA" << endl;
-            cout << "break anyway..." << endl;
-            break;
-        }*/
-        /*usleep(5000);
-    }*/
+    // NanoLog finalization is deliberately delayed until every producer has
+    // stopped. Joining also makes the previous best-effort shutdown ordering
+    // explicit without adding work to the frame path.
+    if(mptLocalMapping != nullptr && mptLocalMapping->joinable())
+        mptLocalMapping->join();
+    if(mptLoopClosing != nullptr && mptLoopClosing->joinable())
+        mptLoopClosing->join();
+    if(mptViewer != nullptr && mptViewer->joinable())
+        mptViewer->join();
+
+    // LoopClosing may own a detached GBA worker.  Wait for its terminal state
+    // before finalizing NanoLog so no producer can enter the runtime during
+    // finalization.
+    while(mpLoopCloser != nullptr && mpLoopCloser->isRunningGBA())
+        usleep(1000);
+    FT_CALC_LOG("system.shutdown.workers_stopped");
+
+    KernelController::shutdownKernels();
 
     if(!mStrSaveAtlasToFile.empty())
     {
@@ -580,6 +594,8 @@ void System::Shutdown()
     mpTracker->PrintTimeStats();
 #endif
 
+    CalculationLog::shutdown();
+
 }
 
 bool System::isShutDown() {
@@ -589,10 +605,11 @@ bool System::isShutDown() {
 
 void System::SaveTrajectoryTUM(const string &filename)
 {
-    cout << endl << "Saving camera trajectory to " << filename << " ..." << endl;
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("system.trajectory.save format=tum kind=camera path=%s", filename.c_str());
     if(mSensor==MONOCULAR)
     {
-        cerr << "ERROR: SaveTrajectoryTUM cannot be used for monocular." << endl;
+        FT_CALC_LOG("system.trajectory.abort format=tum reason=monocular_sensor");
         return;
     }
 
@@ -649,7 +666,8 @@ void System::SaveTrajectoryTUM(const string &filename)
 
 void System::SaveKeyFrameTrajectoryTUM(const string &filename)
 {
-    cout << endl << "Saving keyframe trajectory to " << filename << " ..." << endl;
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("system.trajectory.save format=tum kind=keyframe path=%s", filename.c_str());
 
     vector<KeyFrame*> vpKFs = mpAtlas->GetAllKeyFrames();
     sort(vpKFs.begin(),vpKFs.end(),KeyFrame::lId);
@@ -682,26 +700,34 @@ void System::SaveKeyFrameTrajectoryTUM(const string &filename)
 
 void System::SaveTrajectoryEuRoC(const string &filename)
 {
-
-    cout << endl << "Saving trajectory to " << filename << " ..." << endl;
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("system.trajectory.save format=euroc kind=frame path=%s", filename.c_str());
     /*if(mSensor==MONOCULAR)
     {
-        cerr << "ERROR: SaveTrajectoryEuRoC cannot be used for monocular." << endl;
+        FT_CALC_LOG("system.trajectory.abort format=euroc reason=monocular_sensor");
         return;
     }*/
 
     vector<Map*> vpMaps = mpAtlas->GetAllMaps();
     int numMaxKFs = 0;
-    Map* pBiggerMap;
-    std::cout << "There are " << std::to_string(vpMaps.size()) << " maps in the atlas" << std::endl;
+    Map* pBiggerMap = nullptr;
+    FT_CALC_LOG("system.trajectory.maps count=%llu", static_cast<unsigned long long>(vpMaps.size()));
     for(Map* pMap :vpMaps)
     {
-        std::cout << "  Map " << std::to_string(pMap->GetId()) << " has " << std::to_string(pMap->GetAllKeyFrames().size()) << " KFs" << std::endl;
+        FT_CALC_LOG("system.trajectory.map id=%llu keyframes=%llu",
+                    static_cast<unsigned long long>(pMap->GetId()),
+                    static_cast<unsigned long long>(pMap->GetAllKeyFrames().size()));
         if(pMap->GetAllKeyFrames().size() > numMaxKFs)
         {
             numMaxKFs = pMap->GetAllKeyFrames().size();
             pBiggerMap = pMap;
         }
+    }
+
+    if(!pBiggerMap || pBiggerMap->GetAllKeyFrames().empty())
+    {
+        FT_CALC_LOG("system.trajectory.abort format=euroc reason=no_keyframes");
+        return;
     }
 
     vector<KeyFrame*> vpKFs = pBiggerMap->GetAllKeyFrames();
@@ -794,16 +820,17 @@ void System::SaveTrajectoryEuRoC(const string &filename)
     }
     //cout << "end saving trajectory" << endl;
     f.close();
-    cout << endl << "End of saving trajectory to " << filename << " ..." << endl;
+    FT_CALC_LOG("system.trajectory.saved format=euroc kind=frame path=%s", filename.c_str());
 }
 
 void System::SaveTrajectoryEuRoC(const string &filename, Map* pMap)
 {
-
-    cout << endl << "Saving trajectory of map " << pMap->GetId() << " to " << filename << " ..." << endl;
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("system.trajectory.save format=euroc kind=frame map_id=%llu path=%s",
+                static_cast<unsigned long long>(pMap->GetId()), filename.c_str());
     /*if(mSensor==MONOCULAR)
     {
-        cerr << "ERROR: SaveTrajectoryEuRoC cannot be used for monocular." << endl;
+        FT_CALC_LOG("system.trajectory.abort format=euroc reason=monocular_sensor");
         return;
     }*/
 
@@ -899,7 +926,8 @@ void System::SaveTrajectoryEuRoC(const string &filename, Map* pMap)
     }
     //cout << "end saving trajectory" << endl;
     f.close();
-    cout << endl << "End of saving trajectory to " << filename << " ..." << endl;
+    FT_CALC_LOG("system.trajectory.saved format=euroc kind=frame map_id=%llu path=%s",
+                static_cast<unsigned long long>(pMap->GetId()), filename.c_str());
 }
 
 /*void System::SaveTrajectoryEuRoC(const string &filename)
@@ -1077,10 +1105,11 @@ void System::SaveTrajectoryEuRoC(const string &filename, Map* pMap)
 
 void System::SaveKeyFrameTrajectoryEuRoC(const string &filename)
 {
-    cout << endl << "Saving keyframe trajectory to " << filename << " ..." << endl;
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("system.trajectory.save format=euroc kind=keyframe path=%s", filename.c_str());
 
     vector<Map*> vpMaps = mpAtlas->GetAllMaps();
-    Map* pBiggerMap;
+    Map* pBiggerMap = nullptr;
     int numMaxKFs = 0;
     for(Map* pMap :vpMaps)
     {
@@ -1093,7 +1122,7 @@ void System::SaveKeyFrameTrajectoryEuRoC(const string &filename)
 
     if(!pBiggerMap)
     {
-        std::cout << "There is not a map!!" << std::endl;
+        FT_CALC_LOG("system.trajectory.abort format=euroc reason=no_map");
         return;
     }
 
@@ -1135,7 +1164,9 @@ void System::SaveKeyFrameTrajectoryEuRoC(const string &filename)
 
 void System::SaveKeyFrameTrajectoryEuRoC(const string &filename, Map* pMap)
 {
-    cout << endl << "Saving keyframe trajectory of map " << pMap->GetId() << " to " << filename << " ..." << endl;
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("system.trajectory.save format=euroc kind=keyframe map_id=%llu path=%s",
+                static_cast<unsigned long long>(pMap->GetId()), filename.c_str());
 
     vector<KeyFrame*> vpKFs = pMap->GetAllKeyFrames();
     sort(vpKFs.begin(),vpKFs.end(),KeyFrame::lId);
@@ -1226,10 +1257,11 @@ void System::SaveKeyFrameTrajectoryEuRoC(const string &filename, Map* pMap)
 
 void System::SaveTrajectoryKITTI(const string &filename)
 {
-    cout << endl << "Saving camera trajectory to " << filename << " ..." << endl;
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("system.trajectory.save format=kitti kind=camera path=%s", filename.c_str());
     if(mSensor==MONOCULAR)
     {
-        cerr << "ERROR: SaveTrajectoryKITTI cannot be used for monocular." << endl;
+        FT_CALC_LOG("system.trajectory.abort format=kitti reason=monocular_sensor");
         return;
     }
 
@@ -1422,6 +1454,8 @@ void System::InsertTrackTime(double& time)
 #endif
 
 void System::SaveAtlas(int type){
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("system.atlas.save.begin type=%d configured=%d", type, mStrSaveAtlasToFile.empty() ? 0 : 1);
     if(!mStrSaveAtlasToFile.empty())
     {
         //clock_t start = clock();
@@ -1439,7 +1473,7 @@ void System::SaveAtlas(int type){
 
         if(type == TEXT_FILE) // File text
         {
-            cout << "Starting to write the save text file " << endl;
+            FT_CALC_LOG("system.atlas.save.file type=text path=%s", pathSaveFileName.c_str());
             std::remove(pathSaveFileName.c_str());
             std::ofstream ofs(pathSaveFileName, std::ios::binary);
             boost::archive::text_oarchive oa(ofs);
@@ -1447,24 +1481,25 @@ void System::SaveAtlas(int type){
             oa << strVocabularyName;
             oa << strVocabularyChecksum;
             oa << mpAtlas;
-            cout << "End to write the save text file" << endl;
+            FT_CALC_LOG("system.atlas.save.file_complete type=text");
         }
         else if(type == BINARY_FILE) // File binary
         {
-            cout << "Starting to write the save binary file" << endl;
+            FT_CALC_LOG("system.atlas.save.file type=binary path=%s", pathSaveFileName.c_str());
             std::remove(pathSaveFileName.c_str());
             std::ofstream ofs(pathSaveFileName, std::ios::binary);
             boost::archive::binary_oarchive oa(ofs);
             oa << strVocabularyName;
             oa << strVocabularyChecksum;
             oa << mpAtlas;
-            cout << "End to write save binary file" << endl;
+            FT_CALC_LOG("system.atlas.save.file_complete type=binary");
         }
     }
 }
 
 bool System::LoadAtlas(int type)
 {
+    FT_CALC_SCOPE();
     string strFileVoc, strVocChecksum;
     bool isRead = false;
 
@@ -1474,34 +1509,34 @@ bool System::LoadAtlas(int type)
 
     if(type == TEXT_FILE) // File text
     {
-        cout << "Starting to read the save text file " << endl;
+        FT_CALC_LOG("system.atlas.load.file type=text path=%s", pathLoadFileName.c_str());
         std::ifstream ifs(pathLoadFileName, std::ios::binary);
         if(!ifs.good())
         {
-            cout << "Load file not found" << endl;
+            FT_CALC_LOG("system.atlas.load.abort reason=file_not_found path=%s", pathLoadFileName.c_str());
             return false;
         }
         boost::archive::text_iarchive ia(ifs);
         ia >> strFileVoc;
         ia >> strVocChecksum;
         ia >> mpAtlas;
-        cout << "End to load the save text file " << endl;
+        FT_CALC_LOG("system.atlas.load.file_complete type=text");
         isRead = true;
     }
     else if(type == BINARY_FILE) // File binary
     {
-        cout << "Starting to read the save binary file"  << endl;
+        FT_CALC_LOG("system.atlas.load.file type=binary path=%s", pathLoadFileName.c_str());
         std::ifstream ifs(pathLoadFileName, std::ios::binary);
         if(!ifs.good())
         {
-            cout << "Load file not found" << endl;
+            FT_CALC_LOG("system.atlas.load.abort reason=file_not_found path=%s", pathLoadFileName.c_str());
             return false;
         }
         boost::archive::binary_iarchive ia(ifs);
         ia >> strFileVoc;
         ia >> strVocChecksum;
         ia >> mpAtlas;
-        cout << "End to load the save binary file" << endl;
+        FT_CALC_LOG("system.atlas.load.file_complete type=binary");
         isRead = true;
     }
 
@@ -1512,8 +1547,8 @@ bool System::LoadAtlas(int type)
 
         if(strInputVocabularyChecksum.compare(strVocChecksum) != 0)
         {
-            cout << "The vocabulary load isn't the same which the load session was created " << endl;
-            cout << "-Vocabulary name: " << strFileVoc << endl;
+            FT_CALC_LOG("system.atlas.load.abort reason=vocabulary_checksum_mismatch vocabulary=%s",
+                        strFileVoc.c_str());
             return false; // Both are differents
         }
 
@@ -1528,6 +1563,8 @@ bool System::LoadAtlas(int type)
 
 string System::CalculateCheckSum(string filename, int type)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("system.checksum.begin path=%s type=%d", filename.c_str(), type);
     string checksum = "";
 
     unsigned char c[MD5_DIGEST_LENGTH];
@@ -1539,7 +1576,7 @@ string System::CalculateCheckSum(string filename, int type)
     ifstream f(filename.c_str(), flags);
     if ( !f.is_open() )
     {
-        cout << "[E] Unable to open the in file " << filename << " for Md5 hash." << endl;
+        FT_CALC_LOG("system.checksum.abort reason=file_open_failed path=%s", filename.c_str());
         return checksum;
     }
 
@@ -1563,8 +1600,9 @@ string System::CalculateCheckSum(string filename, int type)
         checksum = checksum + aux;
     }
 
+    FT_CALC_LOG("system.checksum.end path=%s length=%llu", filename.c_str(),
+                static_cast<unsigned long long>(checksum.size()));
     return checksum;
 }
 
 } //namespace ORB_SLAM
-

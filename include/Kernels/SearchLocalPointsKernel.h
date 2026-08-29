@@ -2,6 +2,7 @@
 #define SEARCH_LOCAL_POINTS_KERNEL_H
 
 #include "KernelInterface.h"
+#include "CalculationLogApi.h"
 #include "../Frame.h"
 #include "../MapPoint.h"
 #include "CudaUtils.h"
@@ -11,7 +12,6 @@
 #include <opencv2/opencv.hpp>
 #include <stdio.h>
 #include <fstream>
-#include <iostream>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -27,7 +27,7 @@ class SearchLocalPointsKernel: public KernelInterface {
         void initialize() override;
         void shutdown() override;
         void saveStats(const string &file_path) override;
-        void launch() override { cout << "[SearchLocalPointsKernel:] provide input for kernel launch.\n"; };
+        void launch() override { ORB_SLAM3::CalculationLog::text("search_local_points.launch.abort reason=no_input"); };
         void launch(ORB_SLAM3::Frame &F, const vector<ORB_SLAM3::MapPoint*> &vmp, const float th, const bool bFarPoints, const float thFarPoints,
                                 int* h_bestLevel, int* h_bestLevel2, int* h_bestDist, int* h_bestDist2, int* h_bestIdx,
                                 int* h_bestLevelR, int* h_bestLevelR2, int* h_bestDistR, int* h_bestDistR2, int* h_bestIdxR);
@@ -68,4 +68,4 @@ class SearchLocalPointsKernel: public KernelInterface {
 };
 
 
-#endif 
+#endif

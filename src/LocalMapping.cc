@@ -23,6 +23,7 @@
 #include "Optimizer.h"
 #include "Converter.h"
 #include "GeometricTools.h"
+#include "CalculationLogger.h"
 
 #include<mutex>
 #include<chrono>
@@ -63,6 +64,9 @@ void LocalMapping::SetTracker(Tracking *pTracker)
 
 void LocalMapping::Run()
 {
+    CalculationLog::preallocate();
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("local_mapping.worker.start inertial=%d monocular=%d", mbInertial ? 1 : 0, mbMonocular ? 1 : 0);
     mbFinished = false;
 
     while(1)
@@ -73,6 +77,7 @@ void LocalMapping::Run()
         // Check if there are keyframes in the queue
         if(CheckNewKeyFrames() && !mbBadImu)
         {
+            FT_CALC_LOG("local_mapping.cycle.begin queue=%d", KeyframesInQueue());
 #ifdef REGISTER_TIMES
             double timeLBA_ms = 0;
             double timeKFCulling_ms = 0;
@@ -137,7 +142,8 @@ void LocalMapping::Run()
                         {
                             if((mTinit<10.f) && (dist<0.02))
                             {
-                                cout << "Not enough motion for initializing. Reseting..." << endl;
+                                FT_CALC_LOG("local_mapping.imu_reset reason=insufficient_motion distance=%f init_time=%f",
+                                            dist, mTinit);
                                 unique_lock<mutex> lock(mMutexReset);
                                 mbResetRequestedActiveMap = true;
                                 mpMapToReset = mpCurrentKeyFrame->GetMap();
@@ -204,26 +210,26 @@ void LocalMapping::Run()
                         if(!mpCurrentKeyFrame->GetMap()->GetIniertialBA1()){
                             if (mTinit>5.0f)
                             {
-                                cout << "start VIBA 1" << endl;
+                                FT_CALC_LOG("local_mapping.viba.start stage=1 init_time=%f", mTinit);
                                 mpCurrentKeyFrame->GetMap()->SetIniertialBA1();
                                 if (mbMonocular)
                                     InitializeIMU(1.f, 1e5, true);
                                 else
                                     InitializeIMU(1.f, 1e5, true);
 
-                                cout << "end VIBA 1" << endl;
+                                FT_CALC_LOG("local_mapping.viba.end stage=1");
                             }
                         }
                         else if(!mpCurrentKeyFrame->GetMap()->GetIniertialBA2()){
                             if (mTinit>15.0f){
-                                cout << "start VIBA 2" << endl;
+                                FT_CALC_LOG("local_mapping.viba.start stage=2 init_time=%f", mTinit);
                                 mpCurrentKeyFrame->GetMap()->SetIniertialBA2();
                                 if (mbMonocular)
                                     InitializeIMU(0.f, 0.f, true);
                                 else
                                     InitializeIMU(0.f, 0.f, true);
 
-                                cout << "end VIBA 2" << endl;
+                                FT_CALC_LOG("local_mapping.viba.end stage=2");
                             }
                         }
 
@@ -248,6 +254,10 @@ void LocalMapping::Run()
 #endif
 
             mpLoopCloser->InsertKeyFrame(mpCurrentKeyFrame);
+
+            FT_CALC_LOG("local_mapping.cycle.end keyframe=%llu lba_done=%d abort=%d optimized_kfs=%d optimized_mps=%d edges=%d",
+                        static_cast<unsigned long long>(mpCurrentKeyFrame->mnId), b_doneLBA ? 1 : 0,
+                        mbAbortBA ? 1 : 0, num_OptKF_BA, num_MPs_BA, num_edges_BA);
 
 #ifdef REGISTER_TIMES
             std::chrono::steady_clock::time_point time_EndLocalMap = std::chrono::steady_clock::now();
@@ -279,10 +289,12 @@ void LocalMapping::Run()
     }
 
     SetFinish();
+    FT_CALC_LOG("local_mapping.worker.end");
 }
 
 void LocalMapping::InsertKeyFrame(KeyFrame *pKF)
 {
+    FT_CALC_LOG("local_mapping.keyframe.enqueue id=%llu", static_cast<unsigned long long>(pKF->mnId));
     unique_lock<mutex> lock(mMutexNewKFs);
     mlNewKeyFrames.push_back(pKF);
     mbAbortBA=true;
@@ -297,6 +309,7 @@ bool LocalMapping::CheckNewKeyFrames()
 
 void LocalMapping::ProcessNewKeyFrame()
 {
+    FT_CALC_SCOPE();
     {
         unique_lock<mutex> lock(mMutexNewKFs);
         mpCurrentKeyFrame = mlNewKeyFrames.front();
@@ -335,6 +348,9 @@ void LocalMapping::ProcessNewKeyFrame()
 
     // Insert Keyframe in Map
     mpAtlas->AddKeyFrame(mpCurrentKeyFrame);
+    FT_CALC_LOG("local_mapping.keyframe.processed id=%llu map_points=%llu",
+                static_cast<unsigned long long>(mpCurrentKeyFrame->mnId),
+                static_cast<unsigned long long>(vpMapPointMatches.size()));
 }
 
 void LocalMapping::EmptyQueue()
@@ -345,6 +361,7 @@ void LocalMapping::EmptyQueue()
 
 void LocalMapping::MapPointCulling()
 {
+    FT_CALC_SCOPE();
     // Check Recent Added MapPoints
     list<MapPoint*>::iterator lit = mlpRecentAddedMapPoints.begin();
     const unsigned long int nCurrentKFid = mpCurrentKeyFrame->mnId;
@@ -382,11 +399,14 @@ void LocalMapping::MapPointCulling()
             borrar--;
         }
     }
+    FT_CALC_LOG("local_mapping.mappoint_culling keyframe=%llu remaining=%d",
+                static_cast<unsigned long long>(nCurrentKFid), borrar);
 }
 
 
 void LocalMapping::CreateNewMapPoints()
 {
+    FT_CALC_SCOPE();
     // Retrieve neighbor keyframes in covisibility graph
     int nn = 10;
     // For stereo inertial case
@@ -713,6 +733,7 @@ void LocalMapping::CreateNewMapPoints()
 
 void LocalMapping::SearchInNeighbors()
 {
+    FT_CALC_SCOPE();
     // Retrieve neighbor keyframes
     int nn = 10;
     if(mbMonocular)
@@ -820,6 +841,10 @@ void LocalMapping::SearchInNeighbors()
 
     // Update connections in covisibility graph
     mpCurrentKeyFrame->UpdateConnections();
+    FT_CALC_LOG("local_mapping.neighbor_search keyframe=%llu targets=%llu fuse_candidates=%llu aborted=%d",
+                static_cast<unsigned long long>(mpCurrentKeyFrame->mnId),
+                static_cast<unsigned long long>(vpTargetKFs.size()),
+                static_cast<unsigned long long>(vpFuseCandidates.size()), mbAbortBA ? 1 : 0);
 }
 
 void LocalMapping::RequestStop()
@@ -836,7 +861,7 @@ bool LocalMapping::Stop()
     if(mbStopRequested && !mbNotStop)
     {
         mbStopped = true;
-        cout << "Local Mapping STOP" << endl;
+        FT_CALC_LOG("local_mapping.worker.stop");
         return true;
     }
 
@@ -867,7 +892,7 @@ void LocalMapping::Release()
         delete *lit;
     mlNewKeyFrames.clear();
 
-    cout << "Local Mapping RELEASE" << endl;
+    FT_CALC_LOG("local_mapping.worker.release");
 }
 
 bool LocalMapping::AcceptKeyFrames()
@@ -1055,12 +1080,11 @@ void LocalMapping::KeyFrameCulling()
 
 void LocalMapping::RequestReset()
 {
+    FT_CALC_LOG("local_mapping.reset.request type=atlas");
     {
         unique_lock<mutex> lock(mMutexReset);
-        cout << "LM: Map reset recieved" << endl;
         mbResetRequested = true;
     }
-    cout << "LM: Map reset, waiting..." << endl;
 
     while(1)
     {
@@ -1071,18 +1095,18 @@ void LocalMapping::RequestReset()
         }
         usleep(3000);
     }
-    cout << "LM: Map reset, Done!!!" << endl;
+    FT_CALC_LOG("local_mapping.reset.complete type=atlas");
 }
 
 void LocalMapping::RequestResetActiveMap(Map* pMap)
 {
+    FT_CALC_LOG("local_mapping.reset.request type=active_map id=%llu",
+                static_cast<unsigned long long>(pMap ? pMap->GetId() : 0));
     {
         unique_lock<mutex> lock(mMutexReset);
-        cout << "LM: Active map reset recieved" << endl;
         mbResetRequestedActiveMap = true;
         mpMapToReset = pMap;
     }
-    cout << "LM: Active map reset, waiting..." << endl;
 
     while(1)
     {
@@ -1093,7 +1117,7 @@ void LocalMapping::RequestResetActiveMap(Map* pMap)
         }
         usleep(3000);
     }
-    cout << "LM: Active map reset, Done!!!" << endl;
+    FT_CALC_LOG("local_mapping.reset.complete type=active_map");
 }
 
 void LocalMapping::ResetIfRequested()
@@ -1105,7 +1129,7 @@ void LocalMapping::ResetIfRequested()
         {
             executed_reset = true;
 
-            cout << "LM: Reseting Atlas in Local Mapping..." << endl;
+            FT_CALC_LOG("local_mapping.reset.execute type=atlas");
             mlNewKeyFrames.clear();
             mlpRecentAddedMapPoints.clear();
             mbResetRequested = false;
@@ -1119,12 +1143,12 @@ void LocalMapping::ResetIfRequested()
 
             mIdxInit=0;
 
-            cout << "LM: End reseting Local Mapping..." << endl;
+            FT_CALC_LOG("local_mapping.reset.execute_complete type=atlas");
         }
 
         if(mbResetRequestedActiveMap) {
             executed_reset = true;
-            cout << "LM: Reseting current map in Local Mapping..." << endl;
+            FT_CALC_LOG("local_mapping.reset.execute type=active_map");
             mlNewKeyFrames.clear();
             mlpRecentAddedMapPoints.clear();
 
@@ -1136,11 +1160,11 @@ void LocalMapping::ResetIfRequested()
 
             mbResetRequested = false;
             mbResetRequestedActiveMap = false;
-            cout << "LM: End reseting Local Mapping..." << endl;
+            FT_CALC_LOG("local_mapping.reset.execute_complete type=active_map");
         }
     }
     if(executed_reset)
-        cout << "LM: Reset free the mutex" << endl;
+        FT_CALC_LOG("local_mapping.reset.unlock");
 
 }
 
@@ -1172,6 +1196,9 @@ bool LocalMapping::isFinished()
 
 void LocalMapping::InitializeIMU(float priorG, float priorA, bool bFIBA)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("local_mapping.imu_initialize.begin prior_g=%f prior_a=%f full_ba=%d",
+                priorG, priorA, bFIBA ? 1 : 0);
     if (mbResetRequested)
         return;
 
@@ -1270,7 +1297,7 @@ void LocalMapping::InitializeIMU(float priorG, float priorA, bool bFIBA)
 
     if (mScale<1e-1)
     {
-        cout << "scale too small" << endl;
+        FT_CALC_LOG("local_mapping.imu_initialize.abort reason=scale_too_small scale=%f", mScale);
         bInitializing=false;
         return;
     }
@@ -1369,7 +1396,8 @@ void LocalMapping::InitializeIMU(float priorG, float priorA, bool bFIBA)
             pKF->SetVelocity(pKF->mVwbGBA);
             pKF->SetNewBias(pKF->mBiasGBA);
         } else {
-            cout << "KF " << pKF->mnId << " not set to inertial!! \n";
+            FT_CALC_LOG("local_mapping.imu_initialize.warning keyframe=%llu inertial=0",
+                        static_cast<unsigned long long>(pKF->mnId));
         }
 
         lpKFtoCheck.pop_front();
@@ -1423,11 +1451,14 @@ void LocalMapping::InitializeIMU(float priorG, float priorA, bool bFIBA)
 
     mpCurrentKeyFrame->GetMap()->IncreaseChangeIndex();
 
+    FT_CALC_LOG("local_mapping.imu_initialize.end scale=%f keyframes=%d", mScale, mnKFs);
+
     return;
 }
 
 void LocalMapping::ScaleRefinement()
 {
+    FT_CALC_SCOPE();
     // Minimum number of keyframes to compute a solution
     // Minimum time (seconds) between first and last keyframe to compute a solution. Make the difference between monocular and stereo
     // unique_lock<mutex> lock0(mMutexImuInit);
@@ -1463,7 +1494,7 @@ void LocalMapping::ScaleRefinement()
 
     if (mScale<1e-1) // 1e-1
     {
-        cout << "scale too small" << endl;
+        FT_CALC_LOG("local_mapping.scale_refinement.abort reason=scale_too_small scale=%f", mScale);
         bInitializing=false;
         return;
     }

@@ -10,8 +10,8 @@
 
 #include <cuda.h>
 #include <opencv2/core/hal/interface.h>
-#include <stdio.h>
 
+#include "CalculationLogApi.h"
 #include "resize.h"
 
 #define index(x, y, step) (y * step + x)
@@ -60,6 +60,9 @@ __global__ void resize_kernel(uint old_h, uint old_w, float *_scaleFactor, const
 void resize(uint old_h, uint old_w, float *_scaleFactor, uchar *original_img, uchar *new_images, uint maxLevel, uint imageStep, cudaStream_t stream) {
     dim3 dg( ceil( (float)old_w/128 ), ceil( (float)old_h/8 ), ceil( (float)maxLevel/1 ) );
     dim3 db( 128, 8, 1 );
+
+    ORB_SLAM3::CalculationLog::textf("cuda.resize.launch rows=%u cols=%u levels=%u image_step=%u grid=%ux%ux%u block=%ux%ux%u",
+                                     old_h, old_w, maxLevel, imageStep, dg.x, dg.y, dg.z, db.x, db.y, db.z);
 
     resize_kernel<<<dg, db, 0, stream>>>(old_h, old_w, _scaleFactor, original_img, new_images, maxLevel, imageStep);
 }

@@ -1,12 +1,5 @@
 #include "Kernels/KernelController.h"
-
-// #define DEBUG
-
-#ifdef DEBUG
-#define DEBUG_PRINT(msg) std::cout << "Debug [KernelController::]  " << msg << std::endl
-#else
-#define DEBUG_PRINT(msg) do {} while (0)
-#endif
+#include "CalculationLogApi.h"
 
 bool KernelController::orbExtractionKernelRunStatus;
 bool KernelController::stereoMatchKernelRunStatus;
@@ -26,10 +19,14 @@ void KernelController::setCUDADevice(int deviceID) {
     cudaSetDevice(deviceID);
     cudaDeviceProp deviceProp;
     cudaGetDeviceProperties(&deviceProp, deviceID);
-    printf("Using device %d: %s\n", deviceID, deviceProp.name);
+    ORB_SLAM3::CalculationLog::textf("cuda.device.selected id=%d name=%s", deviceID, deviceProp.name);
 }
 
 void KernelController::setGPURunMode(bool orbExtractionStatus, bool stereoMatchStatus, bool searchLocalPointsStatus, bool poseEstimationStatus, bool poseOptimizationStatus) {
+    ORB_SLAM3::CalculationLog::textf("cuda.run_mode orb=%d stereo=%d search_local=%d pose_estimation=%d pose_optimization=%d",
+                                     orbExtractionStatus ? 1 : 0, stereoMatchStatus ? 1 : 0,
+                                     searchLocalPointsStatus ? 1 : 0, poseEstimationStatus ? 1 : 0,
+                                     poseOptimizationStatus ? 1 : 0);
     orbExtractionKernelRunStatus = orbExtractionStatus;
     stereoMatchKernelRunStatus = stereoMatchStatus;
     searchLocalPointsKernelRunStatus = searchLocalPointsStatus;
@@ -38,6 +35,7 @@ void KernelController::setGPURunMode(bool orbExtractionStatus, bool stereoMatchS
 }
 
 void KernelController::initializeKernels(){
+    ORB_SLAM3::CalculationLog::text("cuda.kernels.initialize.begin");
     cudaFramePtr = new DATA_WRAPPER::CudaFrame();
     cudaLastFramePtr = new DATA_WRAPPER::CudaFrame();
 #ifdef REGISTER_STATS
@@ -65,9 +63,11 @@ void KernelController::initializeKernels(){
 #endif
     checkCudaError(cudaDeviceSynchronize(), "[Kernel Controller:] Failed to initialize kernels.");
     memory_is_initialized = true;
+    ORB_SLAM3::CalculationLog::text("cuda.kernels.initialize.end");
 }
 
 void KernelController::shutdownKernels(){
+    ORB_SLAM3::CalculationLog::text("cuda.kernels.shutdown.begin");
     if (memory_is_initialized) {
         cudaFramePtr->freeMemory();
         delete cudaFramePtr;
@@ -81,6 +81,7 @@ void KernelController::shutdownKernels(){
     if (cuda_utils_loaded_setting) {
         CudaUtils::shutdown();
     }
+    ORB_SLAM3::CalculationLog::text("cuda.kernels.shutdown.end");
 }
 
 void KernelController::saveKernelsStats(const std::string &file_path){
@@ -96,7 +97,8 @@ void KernelController::launchStereoMatchKernel(std::vector<std::vector<int>> &vR
                                                const float mbf, const bool mvImagePyramidOnGpu,
                                                std::vector<std::pair<int, int>> &vDistIdx, std::vector<float> &mvuRight, std::vector<float> &mvDepth) {
     
-    DEBUG_PRINT("launching StereoMatch Kernel");
+    ORB_SLAM3::CalculationLog::textf("cuda.launch.stereo frame_features=%llu threshold=%d min_depth=%f max_depth=%f",
+                                     static_cast<unsigned long long>(mvKeys.size()), thOrbDist, minD, maxD);
 
     mpStereoMatchKernel->launch(vRowIndices, d_imagePyramidL, d_imagePyramidR, mvImagePyramid, mvImagePyramidRight, mvKeys, mvKeysRight, 
                                 mDescriptors, mDescriptorsRight, minD, maxD, thOrbDist, mbf, mvImagePyramidOnGpu, vDistIdx, mvuRight, mvDepth);
@@ -111,7 +113,7 @@ void KernelController::launchStereoMatchKernel(std::vector<std::vector<int>> &vR
 
 void KernelController::launchFisheyeStereoMatchKernel(const int N, const int Nr, cv::Mat mDescriptors, cv::Mat mDescriptorsRight, int* matches) {
 
-    DEBUG_PRINT("launching FisheyeStereoMatch Kernel"); 
+    ORB_SLAM3::CalculationLog::textf("cuda.launch.fisheye_stereo left=%d right=%d", N, Nr);
 
     mpStereoMatchKernel->launch(N, Nr, mDescriptors, mDescriptorsRight, matches);
 
@@ -126,7 +128,10 @@ void KernelController::launchSearchLocalPointsKernel(ORB_SLAM3::Frame &F, const 
                                                     int* h_bestLevel, int* h_bestLevel2, int* h_bestDist, int* h_bestDist2, int* h_bestIdx,
                                                     int* h_bestLevelR, int* h_bestLevelR2, int* h_bestDistR, int* h_bestDistR2, int* h_bestIdxR) {
          
-    // DEBUG_PRINT("launching SearchLocalPoints Kernel"); 
+    ORB_SLAM3::CalculationLog::textf("cuda.launch.search_local frame=%llu map_points=%llu threshold=%f far_points=%d far_threshold=%f",
+                                     static_cast<unsigned long long>(F.mnId),
+                                     static_cast<unsigned long long>(vmp.size()), th,
+                                     bFarPoints ? 1 : 0, thFarPoints);
     // if(cudaFramePtr->mnId == NULL || cudaFramePtr->mnId != F.mnId) {
 #ifdef REGISTER_STATS
     std::chrono::steady_clock::time_point startFrameWrap = std::chrono::steady_clock::now();
@@ -155,7 +160,10 @@ void KernelController::launchPoseEstimationKernel(ORB_SLAM3::Frame &CurrentFrame
                                                 const float th, const bool bForward, const bool bBackward, Eigen::Matrix4f transform_matrix,
                                                 int* h_bestDist, int* h_bestIdx2, int* h_bestDistR, int* h_bestIdxR2){
 
-    DEBUG_PRINT("launching PoseEstimation Kernel"); 
+    ORB_SLAM3::CalculationLog::textf("cuda.launch.pose_estimation current=%llu last=%llu threshold=%f forward=%d backward=%d",
+                                     static_cast<unsigned long long>(CurrentFrame.mnId),
+                                     static_cast<unsigned long long>(LastFrame.mnId), th,
+                                     bForward ? 1 : 0, bBackward ? 1 : 0);
 #ifdef REGISTER_STATS
     std::chrono::steady_clock::time_point startFrameWrap = std::chrono::steady_clock::now();
 #endif

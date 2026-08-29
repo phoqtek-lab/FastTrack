@@ -19,6 +19,7 @@
 
 #include "KeyFrameDatabase.h"
 
+#include "CalculationLogger.h"
 #include "KeyFrame.h"
 #include "Thirdparty/DBoW2/DBoW2/BowVector.h"
 
@@ -32,20 +33,26 @@ namespace ORB_SLAM3
 KeyFrameDatabase::KeyFrameDatabase (const ORBVocabulary &voc):
     mpVoc(&voc)
 {
+    FT_CALC_SCOPE();
     mvInvertedFile.resize(voc.size());
+    FT_CALC_LOG("keyframe_database.constructor vocabulary_words=%d", static_cast<int>(voc.size()));
 }
 
 
 void KeyFrameDatabase::add(KeyFrame *pKF)
 {
+    FT_CALC_SCOPE();
     unique_lock<mutex> lock(mMutex);
 
     for(DBoW2::BowVector::const_iterator vit= pKF->mBowVec.begin(), vend=pKF->mBowVec.end(); vit!=vend; vit++)
         mvInvertedFile[vit->first].push_back(pKF);
+    FT_CALC_LOG("keyframe_database.add keyframe=%llu bow_words=%d",
+                static_cast<unsigned long long>(pKF->mnId), static_cast<int>(pKF->mBowVec.size()));
 }
 
 void KeyFrameDatabase::erase(KeyFrame* pKF)
 {
+    FT_CALC_SCOPE();
     unique_lock<mutex> lock(mMutex);
 
     // Erase elements in the Inverse File for the entry
@@ -63,16 +70,21 @@ void KeyFrameDatabase::erase(KeyFrame* pKF)
             }
         }
     }
+    FT_CALC_LOG("keyframe_database.erase keyframe=%llu bow_words=%d",
+                static_cast<unsigned long long>(pKF->mnId), static_cast<int>(pKF->mBowVec.size()));
 }
 
 void KeyFrameDatabase::clear()
 {
+    FT_CALC_SCOPE();
     mvInvertedFile.clear();
     mvInvertedFile.resize(mpVoc->size());
+    FT_CALC_LOG("keyframe_database.clear vocabulary_words=%d", static_cast<int>(mpVoc->size()));
 }
 
 void KeyFrameDatabase::clearMap(Map* pMap)
 {
+    FT_CALC_SCOPE();
     unique_lock<mutex> lock(mMutex);
 
     // Erase elements in the Inverse File for the entry
@@ -95,10 +107,14 @@ void KeyFrameDatabase::clearMap(Map* pMap)
             }
         }
     }
+    FT_CALC_LOG("keyframe_database.clear_map map_id=%llu", static_cast<unsigned long long>(pMap->GetId()));
 }
 
 vector<KeyFrame*> KeyFrameDatabase::DetectLoopCandidates(KeyFrame* pKF, float minScore)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("keyframe_database.detect_loop.begin keyframe=%llu min_score=%f bow_words=%d",
+                static_cast<unsigned long long>(pKF->mnId), minScore, static_cast<int>(pKF->mBowVec.size()));
     set<KeyFrame*> spConnectedKeyFrames = pKF->GetConnectedKeyFrames();
     list<KeyFrame*> lKFsSharingWords;
 
@@ -133,8 +149,10 @@ vector<KeyFrame*> KeyFrameDatabase::DetectLoopCandidates(KeyFrame* pKF, float mi
         }
     }
 
-    if(lKFsSharingWords.empty())
+    if(lKFsSharingWords.empty()) {
+        FT_CALC_LOG("keyframe_database.detect_loop.end shared=0 candidates=0");
         return vector<KeyFrame*>();
+    }
 
     list<pair<float,KeyFrame*> > lScoreAndMatch;
 
@@ -167,8 +185,11 @@ vector<KeyFrame*> KeyFrameDatabase::DetectLoopCandidates(KeyFrame* pKF, float mi
         }
     }
 
-    if(lScoreAndMatch.empty())
+    if(lScoreAndMatch.empty()) {
+        FT_CALC_LOG("keyframe_database.detect_loop.end shared=%d scored=0 candidates=0",
+                    static_cast<int>(lKFsSharingWords.size()));
         return vector<KeyFrame*>();
+    }
 
     list<pair<float,KeyFrame*> > lAccScoreAndMatch;
     float bestAccScore = minScore;
@@ -222,11 +243,17 @@ vector<KeyFrame*> KeyFrameDatabase::DetectLoopCandidates(KeyFrame* pKF, float mi
     }
 
 
+    FT_CALC_LOG("keyframe_database.detect_loop.end shared=%d scored=%d candidates=%d best_score=%f",
+                static_cast<int>(lKFsSharingWords.size()), nscores,
+                static_cast<int>(vpLoopCandidates.size()), bestAccScore);
     return vpLoopCandidates;
 }
 
 void KeyFrameDatabase::DetectCandidates(KeyFrame* pKF, float minScore,vector<KeyFrame*>& vpLoopCand, vector<KeyFrame*>& vpMergeCand)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("keyframe_database.detect_loop_merge.begin keyframe=%llu min_score=%f bow_words=%d",
+                static_cast<unsigned long long>(pKF->mnId), minScore, static_cast<int>(pKF->mBowVec.size()));
     set<KeyFrame*> spConnectedKeyFrames = pKF->GetConnectedKeyFrames();
     list<KeyFrame*> lKFsSharingWordsLoop,lKFsSharingWordsMerge;
 
@@ -272,8 +299,10 @@ void KeyFrameDatabase::DetectCandidates(KeyFrame* pKF, float minScore,vector<Key
         }
     }
 
-    if(lKFsSharingWordsLoop.empty() && lKFsSharingWordsMerge.empty())
+    if(lKFsSharingWordsLoop.empty() && lKFsSharingWordsMerge.empty()) {
+        FT_CALC_LOG("keyframe_database.detect_loop_merge.end loop_shared=0 merge_shared=0 loop_candidates=0 merge_candidates=0");
         return;
+    }
 
     if(!lKFsSharingWordsLoop.empty())
     {
@@ -463,10 +492,17 @@ void KeyFrameDatabase::DetectCandidates(KeyFrame* pKF, float minScore,vector<Key
         }
     }
 
+    FT_CALC_LOG("keyframe_database.detect_loop_merge.end loop_shared=%d merge_shared=%d loop_candidates=%d merge_candidates=%d",
+                static_cast<int>(lKFsSharingWordsLoop.size()), static_cast<int>(lKFsSharingWordsMerge.size()),
+                static_cast<int>(vpLoopCand.size()), static_cast<int>(vpMergeCand.size()));
+
 }
 
 void KeyFrameDatabase::DetectBestCandidates(KeyFrame *pKF, vector<KeyFrame*> &vpLoopCand, vector<KeyFrame*> &vpMergeCand, int nMinWords)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("keyframe_database.detect_best.begin keyframe=%llu min_words=%d bow_words=%d",
+                static_cast<unsigned long long>(pKF->mnId), nMinWords, static_cast<int>(pKF->mBowVec.size()));
     list<KeyFrame*> lKFsSharingWords;
     set<KeyFrame*> spConnectedKF;
 
@@ -498,8 +534,10 @@ void KeyFrameDatabase::DetectBestCandidates(KeyFrame *pKF, vector<KeyFrame*> &vp
             }
         }
     }
-    if(lKFsSharingWords.empty())
+    if(lKFsSharingWords.empty()) {
+        FT_CALC_LOG("keyframe_database.detect_best.end shared=0 loop_candidates=0 merge_candidates=0");
         return;
+    }
 
     // Only compare against those keyframes that share enough words
     int maxCommonWords=0;
@@ -534,8 +572,11 @@ void KeyFrameDatabase::DetectBestCandidates(KeyFrame *pKF, vector<KeyFrame*> &vp
         }
     }
 
-    if(lScoreAndMatch.empty())
+    if(lScoreAndMatch.empty()) {
+        FT_CALC_LOG("keyframe_database.detect_best.end shared=%d scored=0 loop_candidates=0 merge_candidates=0",
+                    static_cast<int>(lKFsSharingWords.size()));
         return;
+    }
 
     list<pair<float,KeyFrame*> > lAccScoreAndMatch;
     float bestAccScore = 0;
@@ -593,6 +634,9 @@ void KeyFrameDatabase::DetectBestCandidates(KeyFrame *pKF, vector<KeyFrame*> &vp
             }
         }
     }
+    FT_CALC_LOG("keyframe_database.detect_best.end shared=%d scored=%d loop_candidates=%d merge_candidates=%d",
+                static_cast<int>(lKFsSharingWords.size()), nscores,
+                static_cast<int>(vpLoopCand.size()), static_cast<int>(vpMergeCand.size()));
 }
 
 bool compFirst(const pair<float, KeyFrame*> & a, const pair<float, KeyFrame*> & b)
@@ -603,6 +647,9 @@ bool compFirst(const pair<float, KeyFrame*> & a, const pair<float, KeyFrame*> & 
 
 void KeyFrameDatabase::DetectNBestCandidates(KeyFrame *pKF, vector<KeyFrame*> &vpLoopCand, vector<KeyFrame*> &vpMergeCand, int nNumCandidates)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("keyframe_database.detect_n_best.begin keyframe=%llu requested=%d bow_words=%d",
+                static_cast<unsigned long long>(pKF->mnId), nNumCandidates, static_cast<int>(pKF->mBowVec.size()));
     list<KeyFrame*> lKFsSharingWords;
     set<KeyFrame*> spConnectedKF;
 
@@ -634,8 +681,10 @@ void KeyFrameDatabase::DetectNBestCandidates(KeyFrame *pKF, vector<KeyFrame*> &v
             }
         }
     }
-    if(lKFsSharingWords.empty())
+    if(lKFsSharingWords.empty()) {
+        FT_CALC_LOG("keyframe_database.detect_n_best.end shared=0 loop_candidates=0 merge_candidates=0");
         return;
+    }
 
     // Only compare against those keyframes that share enough words
     int maxCommonWords=0;
@@ -665,8 +714,11 @@ void KeyFrameDatabase::DetectNBestCandidates(KeyFrame *pKF, vector<KeyFrame*> &v
         }
     }
 
-    if(lScoreAndMatch.empty())
+    if(lScoreAndMatch.empty()) {
+        FT_CALC_LOG("keyframe_database.detect_n_best.end shared=%d scored=0 loop_candidates=0 merge_candidates=0",
+                    static_cast<int>(lKFsSharingWords.size()));
         return;
+    }
 
     list<pair<float,KeyFrame*> > lAccScoreAndMatch;
     float bestAccScore = 0;
@@ -710,7 +762,11 @@ void KeyFrameDatabase::DetectNBestCandidates(KeyFrame *pKF, vector<KeyFrame*> &v
     {
         KeyFrame* pKFi = it->second;
         if(pKFi->isBad())
+        {
+            ++i;
+            ++it;
             continue;
+        }
 
         if(!spAlreadyAddedKF.count(pKFi))
         {
@@ -727,11 +783,18 @@ void KeyFrameDatabase::DetectNBestCandidates(KeyFrame *pKF, vector<KeyFrame*> &v
         i++;
         it++;
     }
+    FT_CALC_LOG("keyframe_database.detect_n_best.end shared=%d scored=%d loop_candidates=%d merge_candidates=%d",
+                static_cast<int>(lKFsSharingWords.size()), nscores,
+                static_cast<int>(vpLoopCand.size()), static_cast<int>(vpMergeCand.size()));
 }
 
 
 vector<KeyFrame*> KeyFrameDatabase::DetectRelocalizationCandidates(Frame *F, Map* pMap)
 {
+    FT_CALC_SCOPE();
+    FT_CALC_LOG("keyframe_database.detect_relocalization.begin frame=%llu map_id=%llu bow_words=%d",
+                static_cast<unsigned long long>(F->mnId), static_cast<unsigned long long>(pMap->GetId()),
+                static_cast<int>(F->mBowVec.size()));
     list<KeyFrame*> lKFsSharingWords;
 
     // Search all keyframes that share a word with current frame
@@ -755,8 +818,10 @@ vector<KeyFrame*> KeyFrameDatabase::DetectRelocalizationCandidates(Frame *F, Map
             }
         }
     }
-    if(lKFsSharingWords.empty())
+    if(lKFsSharingWords.empty()) {
+        FT_CALC_LOG("keyframe_database.detect_relocalization.end shared=0 candidates=0");
         return vector<KeyFrame*>();
+    }
 
     // Only compare against those keyframes that share enough words
     int maxCommonWords=0;
@@ -786,8 +851,11 @@ vector<KeyFrame*> KeyFrameDatabase::DetectRelocalizationCandidates(Frame *F, Map
         }
     }
 
-    if(lScoreAndMatch.empty())
+    if(lScoreAndMatch.empty()) {
+        FT_CALC_LOG("keyframe_database.detect_relocalization.end shared=%d scored=0 candidates=0",
+                    static_cast<int>(lKFsSharingWords.size()));
         return vector<KeyFrame*>();
+    }
 
     list<pair<float,KeyFrame*> > lAccScoreAndMatch;
     float bestAccScore = 0;
@@ -841,17 +909,22 @@ vector<KeyFrame*> KeyFrameDatabase::DetectRelocalizationCandidates(Frame *F, Map
         }
     }
 
+    FT_CALC_LOG("keyframe_database.detect_relocalization.end shared=%d scored=%d candidates=%d best_score=%f",
+                static_cast<int>(lKFsSharingWords.size()), nscores,
+                static_cast<int>(vpRelocCandidates.size()), bestAccScore);
     return vpRelocCandidates;
 }
 
 void KeyFrameDatabase::SetORBVocabulary(ORBVocabulary* pORBVoc)
 {
+    FT_CALC_SCOPE();
     ORBVocabulary** ptr;
     ptr = (ORBVocabulary**)( &mpVoc );
     *ptr = pORBVoc;
 
     mvInvertedFile.clear();
     mvInvertedFile.resize(mpVoc->size());
+    FT_CALC_LOG("keyframe_database.set_vocabulary vocabulary_words=%d", static_cast<int>(mpVoc->size()));
 }
 
 } //namespace ORB_SLAM

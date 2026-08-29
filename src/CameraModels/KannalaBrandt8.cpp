@@ -18,6 +18,9 @@
 
 #include "KannalaBrandt8.h"
 
+#include "CalculationLogger.h"
+
+#include <algorithm>
 #include <boost/serialization/export.hpp>
 
 //BOOST_CLASS_EXPORT_IMPLEMENT(ORB_SLAM3::KannalaBrandt8)
@@ -176,6 +179,10 @@ namespace ORB_SLAM3 {
 
     bool KannalaBrandt8::ReconstructWithTwoViews(const std::vector<cv::KeyPoint>& vKeys1, const std::vector<cv::KeyPoint>& vKeys2, const std::vector<int> &vMatches12,
                                           Sophus::SE3f &T21, std::vector<cv::Point3f> &vP3D, std::vector<bool> &vbTriangulated){
+        FT_CALC_SCOPE();
+        FT_CALC_LOG("fisheye.reconstruct_two_views keys1=%d keys2=%d matches=%d camera_initialized=%d",
+                    static_cast<int>(vKeys1.size()), static_cast<int>(vKeys2.size()),
+                    static_cast<int>(vMatches12.size()), tvr != nullptr ? 1 : 0);
         if(!tvr){
             Eigen::Matrix3f K = this->toK_();
             tvr = new TwoViewReconstruction(K);
@@ -197,7 +204,11 @@ namespace ORB_SLAM3 {
         for(size_t i = 0; i < vKeys1.size(); i++) vKeysUn1[i].pt = vPts1[i];
         for(size_t i = 0; i < vKeys2.size(); i++) vKeysUn2[i].pt = vPts2[i];
 
-        return tvr->Reconstruct(vKeysUn1,vKeysUn2,vMatches12,T21,vP3D,vbTriangulated);
+        const bool result = tvr->Reconstruct(vKeysUn1,vKeysUn2,vMatches12,T21,vP3D,vbTriangulated);
+        FT_CALC_NOTICE("fisheye.reconstruct_two_views.end success=%d points=%d triangulated=%d", result ? 1 : 0,
+                       static_cast<int>(vP3D.size()),
+                       static_cast<int>(std::count(vbTriangulated.begin(), vbTriangulated.end(), true)));
+        return result;
     }
 
 

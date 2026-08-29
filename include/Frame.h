@@ -40,6 +40,7 @@
 #include "sophus/se3.hpp"
 
 #include "Kernels/CudaWrappers/CudaKeyPoint.h"
+#include "CalculationLogApi.h"
 
 namespace ORB_SLAM3
 {
@@ -375,7 +376,7 @@ public:
                 else right++;
             }
         }
-        cout << "Point distribution in Frame: left-> " << left << " --- right-> " << right << endl;
+        CalculationLog::pointDistribution("Frame", left, right);
     }
 
     Sophus::SE3<double> T_test;

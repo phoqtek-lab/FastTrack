@@ -48,12 +48,15 @@
 
 #include "MLPnPsolver.h"
 
+#include "CalculationLogger.h"
+
 #include <Eigen/Sparse>
 
 
 namespace ORB_SLAM3 {
     MLPnPsolver::MLPnPsolver(const Frame &F, const vector<MapPoint *> &vpMapPointMatches):
             mnInliersi(0), mnIterations(0), mnBestInliers(0), N(0), mpCamera(F.mpCamera){
+        FT_CALC_SCOPE();
         mvpMapPointMatches = vpMapPointMatches;
         mvBearingVecs.reserve(F.mvpMapPoints.size());
         mvP2D.reserve(F.mvpMapPoints.size());
@@ -94,10 +97,15 @@ namespace ORB_SLAM3 {
         }
 
         SetRansacParameters();
+        FT_CALC_LOG("mlpnp.constructor input_matches=%d usable_correspondences=%d",
+                    static_cast<int>(vpMapPointMatches.size()), N);
     }
 
     //RANSAC methods
     bool MLPnPsolver::iterate(int nIterations, bool &bNoMore, vector<bool> &vbInliers, int &nInliers, Eigen::Matrix4f &Tout){
+        FT_CALC_SCOPE();
+        FT_CALC_LOG("mlpnp.iterate.begin requested_iterations=%d iteration=%d max_iterations=%d correspondences=%d min_inliers=%d",
+                    nIterations, mnIterations, mRansacMaxIts, N, mRansacMinInliers);
         Tout.setIdentity();
         bNoMore = false;
 	    vbInliers.clear();
@@ -106,6 +114,8 @@ namespace ORB_SLAM3 {
 	    if(N<mRansacMinInliers)
 	    {
 	        bNoMore = true;
+	        FT_CALC_NOTICE("mlpnp.iterate.reject reason=insufficient_correspondences correspondences=%d min_inliers=%d",
+                       N, mRansacMinInliers);
 	        return false;
 	    }
 
@@ -165,6 +175,8 @@ namespace ORB_SLAM3 {
 
 	        // Check inliers
 	        CheckInliers();
+	        FT_CALC_LOG("mlpnp.ransac.iteration index=%d total=%d inliers=%d best_inliers=%d",
+                     nCurrentIterations, mnIterations, mnInliersi, mnBestInliers);
 
 	        if(mnInliersi>=mRansacMinInliers)
 	        {
@@ -196,6 +208,8 @@ namespace ORB_SLAM3 {
 	                        vbInliers[mvKeyPointIndices[i]] = true;
 	                }
 	                Tout = mRefinedTcw;
+	                FT_CALC_NOTICE("mlpnp.iterate.success refined_inliers=%d total_iterations=%d",
+                               nInliers, mnIterations);
 	                return true;
 	            }
 
@@ -215,14 +229,19 @@ namespace ORB_SLAM3 {
 	                    vbInliers[mvKeyPointIndices[i]] = true;
 	            }
 	            Tout = mBestTcw;
+	            FT_CALC_NOTICE("mlpnp.iterate.success best_inliers=%d total_iterations=%d",
+                           nInliers, mnIterations);
 	            return true;
 	        }
 	    }
 
+	    FT_CALC_LOG("mlpnp.iterate.end success=0 no_more=%d best_inliers=%d total_iterations=%d",
+                 bNoMore ? 1 : 0, mnBestInliers, mnIterations);
 	    return false;
 	}
 
 	void MLPnPsolver::SetRansacParameters(double probability, int minInliers, int maxIterations, int minSet, float epsilon, float th2){
+		FT_CALC_SCOPE();
 		mRansacProb = probability;
 	    mRansacMinInliers = minInliers;
 	    mRansacMaxIts = maxIterations;
@@ -257,9 +276,12 @@ namespace ORB_SLAM3 {
 	    mvMaxError.resize(mvSigma2.size());
 	    for(size_t i=0; i<mvSigma2.size(); i++)
 	        mvMaxError[i] = mvSigma2[i]*th2;
+	    FT_CALC_LOG("mlpnp.ransac.parameters probability=%f min_inliers=%d max_iterations=%d min_set=%d epsilon=%f threshold=%f correspondences=%d",
+	                probability, mRansacMinInliers, mRansacMaxIts, mRansacMinSet, mRansacEpsilon, th2, N);
 	}
 
     void MLPnPsolver::CheckInliers(){
+	    FT_CALC_SCOPE();
         mnInliersi=0;
 
         for(int i=0; i<N; i++)
@@ -290,9 +312,11 @@ namespace ORB_SLAM3 {
                 mvbInliersi[i]=false;
             }
         }
+        FT_CALC_LOG("mlpnp.check_inliers correspondences=%d inliers=%d", N, mnInliersi);
     }
 
     bool MLPnPsolver::Refine(){
+	    FT_CALC_SCOPE();
         vector<int> vIndices;
         vIndices.reserve(mvbBestInliers.size());
 
@@ -347,14 +371,18 @@ namespace ORB_SLAM3 {
             Eigen::Matrix<double, 3, 3, Eigen::RowMajor> eigRcw(mRi[0]);
             Eigen::Vector3d eigtcw(mti);
 
+            FT_CALC_NOTICE("mlpnp.refine.success input_inliers=%d refined_inliers=%d", static_cast<int>(vIndices.size()), mnRefinedInliers);
             return true;
         }
+        FT_CALC_LOG("mlpnp.refine.reject input_inliers=%d refined_inliers=%d threshold=%d",
+                    static_cast<int>(vIndices.size()), mnRefinedInliers, mRansacMinInliers);
         return false;
     }
 
 	//MLPnP methods
     void MLPnPsolver::computePose(const bearingVectors_t &f, const points_t &p, const cov3_mats_t &covMats,
                                   const std::vector<int> &indices, transformation_t &result) {
+        FT_CALC_SCOPE();
         size_t numberCorrespondences = indices.size();
         assert(numberCorrespondences > 5);
 
@@ -397,6 +425,9 @@ namespace ORB_SLAM3 {
             for (size_t i = 0; i < numberCorrespondences; i++)
                 points3.col(i) = eigenRot * points3.col(i);
         }
+        FT_CALC_LOG("mlpnp.compute_pose correspondences=%d planar=%d rank=%d covariance=%d",
+                    static_cast<int>(numberCorrespondences), planar ? 1 : 0, static_cast<int>(rankTest.rank()),
+                    covMats.size() == numberCorrespondences ? 1 : 0);
         //////////////////////////////////////
         // 2. stochastic model
         //////////////////////////////////////
@@ -655,9 +686,11 @@ namespace ORB_SLAM3 {
         // result inverse as opengv uses this convention
         result.block<3, 3>(0, 0) = Rout;
         result.block<3, 1>(0, 3) = tout;
+        FT_CALC_LOG("mlpnp.compute_pose.end rotation_det=%f translation_norm=%f", Rout.determinant(), tout.norm());
     }
 
     Eigen::Matrix3d MLPnPsolver::rodrigues2rot(const Eigen::Vector3d &omega) {
+        FT_CALC_SCOPE();
         rotation_t R = Eigen::Matrix3d::Identity();
 
         Eigen::Matrix3d skewW;
@@ -675,6 +708,7 @@ namespace ORB_SLAM3 {
     }
 
     Eigen::Vector3d MLPnPsolver::rot2rodrigues(const Eigen::Matrix3d &R) {
+        FT_CALC_SCOPE();
         rodrigues_t omega;
         omega << 0.0, 0.0, 0.0;
 
@@ -693,6 +727,7 @@ namespace ORB_SLAM3 {
 
     void MLPnPsolver::mlpnp_gn(Eigen::VectorXd &x, const points_t &pts, const std::vector<Eigen::MatrixXd> &nullspaces,
                                const Eigen::SparseMatrix<double> Kll, bool use_cov) {
+        FT_CALC_SCOPE();
         const int numObservations = pts.size();
         const int numUnknowns = 6;
         // check redundancy
@@ -739,6 +774,8 @@ namespace ORB_SLAM3 {
             // solve
             Eigen::LDLT<Eigen::MatrixXd> chol(A);
             dx = chol.solve(g);
+            FT_CALC_LOG("mlpnp.gauss_newton.iteration index=%d residual_norm=%f step_norm=%f",
+                        it_cnt, r.norm(), dx.norm());
             // this is to prevent the solution from falling into a wrong minimum
             // if the linear estimate is spurious
             if (dx.array().abs().maxCoeff() > 5.0 || dx.array().abs().minCoeff() > 1.0)
@@ -755,11 +792,14 @@ namespace ORB_SLAM3 {
             ++it_cnt;
         }//while
         // result
+        FT_CALC_LOG("mlpnp.gauss_newton.end iterations=%d stopped=%d final_residual=%f",
+                    it_cnt, stop ? 1 : 0, r.norm());
     }
 
     void MLPnPsolver::mlpnp_residuals_and_jacs(const Eigen::VectorXd &x, const points_t &pts,
                                                const std::vector<Eigen::MatrixXd> &nullspaces, Eigen::VectorXd &r,
                                                Eigen::MatrixXd &fjac, bool getJacs) {
+        FT_CALC_SCOPE();
         rodrigues_t w(x[0], x[1], x[2]);
         translation_t T(x[3], x[4], x[5]);
 
@@ -803,6 +843,8 @@ namespace ORB_SLAM3 {
             }
             ii += 2;
         }
+        FT_CALC_LOG("mlpnp.residuals_jacobians observations=%d jacobians=%d residual_norm=%f",
+                    static_cast<int>(pts.size()), getJacs ? 1 : 0, r.norm());
     }
 
     void MLPnPsolver::mlpnpJacs(const point_t& pt, const Eigen::Vector3d& nullspace_r,

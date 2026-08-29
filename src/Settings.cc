@@ -22,6 +22,7 @@
 #include "CameraModels/KannalaBrandt8.h"
 
 #include "System.h"
+#include "CalculationLogger.h"
 
 #include <opencv2/core/persistence.hpp>
 #include <opencv2/core/eigen.hpp>
@@ -34,154 +35,173 @@ namespace ORB_SLAM3 {
 
     template<>
     float Settings::readParameter<float>(cv::FileStorage& fSettings, const std::string& name, bool& found, const bool required){
+        FT_CALC_SCOPE();
         cv::FileNode node = fSettings[name];
         if(node.empty()){
             if(required){
-                std::cerr << name << " required parameter does not exist, aborting..." << std::endl;
+                FT_CALC_NOTICE("settings.parameter.missing name=%s type=float required=1", name.c_str());
                 exit(-1);
             }
             else{
-                std::cerr << name << " optional parameter does not exist..." << std::endl;
+                FT_CALC_NOTICE("settings.parameter.missing name=%s type=float required=0", name.c_str());
                 found = false;
                 return 0.0f;
             }
         }
         else if(!node.isReal()){
-            std::cerr << name << " parameter must be a real number, aborting..." << std::endl;
+            FT_CALC_NOTICE("settings.parameter.invalid name=%s type=float reason=not_real", name.c_str());
             exit(-1);
         }
         else{
             found = true;
-            return node.real();
+            const float value = static_cast<float>(node.real());
+            FT_CALC_LOG("settings.parameter.read name=%s type=float value=%f required=%d",
+                        name.c_str(), value, required ? 1 : 0);
+            return value;
         }
     }
 
     template<>
     int Settings::readParameter<int>(cv::FileStorage& fSettings, const std::string& name, bool& found, const bool required){
+        FT_CALC_SCOPE();
         cv::FileNode node = fSettings[name];
         if(node.empty()){
             if(required){
-                std::cerr << name << " required parameter does not exist, aborting..." << std::endl;
+                FT_CALC_NOTICE("settings.parameter.missing name=%s type=int required=1", name.c_str());
                 exit(-1);
             }
             else{
-                std::cerr << name << " optional parameter does not exist..." << std::endl;
+                FT_CALC_NOTICE("settings.parameter.missing name=%s type=int required=0", name.c_str());
                 found = false;
                 return 0;
             }
         }
         else if(!node.isInt()){
-            std::cerr << name << " parameter must be an integer number, aborting..." << std::endl;
+            FT_CALC_NOTICE("settings.parameter.invalid name=%s type=int reason=not_integer", name.c_str());
             exit(-1);
         }
         else{
             found = true;
-            return node.operator int();
+            const int value = node.operator int();
+            FT_CALC_LOG("settings.parameter.read name=%s type=int value=%d required=%d",
+                        name.c_str(), value, required ? 1 : 0);
+            return value;
         }
     }
 
     template<>
     string Settings::readParameter<string>(cv::FileStorage& fSettings, const std::string& name, bool& found, const bool required){
+        FT_CALC_SCOPE();
         cv::FileNode node = fSettings[name];
         if(node.empty()){
             if(required){
-                std::cerr << name << " required parameter does not exist, aborting..." << std::endl;
+                FT_CALC_NOTICE("settings.parameter.missing name=%s type=string required=1", name.c_str());
                 exit(-1);
             }
             else{
-                std::cerr << name << " optional parameter does not exist..." << std::endl;
+                FT_CALC_NOTICE("settings.parameter.missing name=%s type=string required=0", name.c_str());
                 found = false;
                 return string();
             }
         }
         else if(!node.isString()){
-            std::cerr << name << " parameter must be a string, aborting..." << std::endl;
+            FT_CALC_NOTICE("settings.parameter.invalid name=%s type=string reason=not_string", name.c_str());
             exit(-1);
         }
         else{
             found = true;
-            return node.string();
+            const string value = node.string();
+            FT_CALC_LOG("settings.parameter.read name=%s type=string value=%s required=%d",
+                        name.c_str(), value.c_str(), required ? 1 : 0);
+            return value;
         }
     }
 
     template<>
     cv::Mat Settings::readParameter<cv::Mat>(cv::FileStorage& fSettings, const std::string& name, bool& found, const bool required){
+        FT_CALC_SCOPE();
         cv::FileNode node = fSettings[name];
         if(node.empty()){
             if(required){
-                std::cerr << name << " required parameter does not exist, aborting..." << std::endl;
+                FT_CALC_NOTICE("settings.parameter.missing name=%s type=matrix required=1", name.c_str());
                 exit(-1);
             }
             else{
-                std::cerr << name << " optional parameter does not exist..." << std::endl;
+                FT_CALC_NOTICE("settings.parameter.missing name=%s type=matrix required=0", name.c_str());
                 found = false;
                 return cv::Mat();
             }
         }
         else{
             found = true;
-            return node.mat();
+            cv::Mat value = node.mat();
+            FT_CALC_LOG("settings.parameter.read name=%s type=matrix rows=%d cols=%d cv_type=%d required=%d",
+                        name.c_str(), value.rows, value.cols, value.type(), required ? 1 : 0);
+            return value;
         }
     }
 
     Settings::Settings(const std::string &configFile, const int& sensor) :
     bNeedToUndistort_(false), bNeedToRectify_(false), bNeedToResize1_(false), bNeedToResize2_(false) {
+        FT_CALC_SCOPE();
         sensor_ = sensor;
 
         //Open settings file
         cv::FileStorage fSettings(configFile, cv::FileStorage::READ);
         if (!fSettings.isOpened()) {
-            cerr << "[ERROR]: could not open configuration file at: " << configFile << endl;
-            cerr << "Aborting..." << endl;
+            FT_CALC_NOTICE("settings.open.failed path=%s", configFile.c_str());
 
             exit(-1);
         }
         else{
-            cout << "Loading settings from " << configFile << endl;
+            FT_CALC_LOG("settings.opened path=%s sensor=%d", configFile.c_str(), sensor_);
         }
 
         //Read first camera
         readCamera1(fSettings);
-        cout << "\t-Loaded camera 1" << endl;
+        FT_CALC_LOG("settings.loaded section=camera1");
 
         //Read second camera if stereo (not rectified)
         if(sensor_ == System::STEREO || sensor_ == System::IMU_STEREO){
             readCamera2(fSettings);
-            cout << "\t-Loaded camera 2" << endl;
+            FT_CALC_LOG("settings.loaded section=camera2");
         }
 
         //Read image info
         readImageInfo(fSettings);
-        cout << "\t-Loaded image info" << endl;
+        FT_CALC_LOG("settings.loaded section=image_info");
 
         if(sensor_ == System::IMU_MONOCULAR || sensor_ == System::IMU_STEREO || sensor_ == System::IMU_RGBD){
             readIMU(fSettings);
-            cout << "\t-Loaded IMU calibration" << endl;
+            FT_CALC_LOG("settings.loaded section=imu");
         }
 
         if(sensor_ == System::RGBD || sensor_ == System::IMU_RGBD){
             readRGBD(fSettings);
-            cout << "\t-Loaded RGB-D calibration" << endl;
+            FT_CALC_LOG("settings.loaded section=rgbd");
         }
 
         readORB(fSettings);
-        cout << "\t-Loaded ORB settings" << endl;
+        FT_CALC_LOG("settings.loaded section=orb");
         readViewer(fSettings);
-        cout << "\t-Loaded viewer settings" << endl;
+        FT_CALC_LOG("settings.loaded section=viewer");
         readLoadAndSave(fSettings);
-        cout << "\t-Loaded Atlas settings" << endl;
+        FT_CALC_LOG("settings.loaded section=load_save");
         readOtherParameters(fSettings);
-        cout << "\t-Loaded misc parameters" << endl;
+        FT_CALC_LOG("settings.loaded section=other");
 
         if(bNeedToRectify_){
             precomputeRectificationMaps();
-            cout << "\t-Computed rectification maps" << endl;
+            FT_CALC_LOG("settings.rectification_maps.computed");
         }
 
-        cout << "----------------------------------" << endl;
+        FT_CALC_LOG("settings.load.complete undistort=%d rectify=%d resize1=%d resize2=%d",
+                    bNeedToUndistort_ ? 1 : 0, bNeedToRectify_ ? 1 : 0,
+                    bNeedToResize1_ ? 1 : 0, bNeedToResize2_ ? 1 : 0);
     }
 
     void Settings::readCamera1(cv::FileStorage &fSettings) {
+        FT_CALC_SCOPE();
         bool found;
 
         //Read camera model
@@ -268,12 +288,13 @@ namespace ORB_SLAM3 {
             }
         }
         else{
-            cerr << "Error: " << cameraModel << " not known" << endl;
+            FT_CALC_NOTICE("settings.camera.invalid index=1 model=%s", cameraModel.c_str());
             exit(-1);
         }
     }
 
     void Settings::readCamera2(cv::FileStorage &fSettings) {
+        FT_CALC_SCOPE();
         bool found;
         vector<float> vCalibration;
         if (cameraType_ == PinHole) {
@@ -354,6 +375,7 @@ namespace ORB_SLAM3 {
     }
 
     void Settings::readImageInfo(cv::FileStorage &fSettings) {
+        FT_CALC_SCOPE();
         bool found;
         //Read original and desired image dimensions
         int originalRows = readParameter<int>(fSettings,"Camera.height",found);
@@ -412,6 +434,7 @@ namespace ORB_SLAM3 {
     }
 
     void Settings::readIMU(cv::FileStorage &fSettings) {
+        FT_CALC_SCOPE();
         bool found;
         noiseGyro_ = readParameter<float>(fSettings,"IMU.NoiseGyro",found);
         noiseAcc_ = readParameter<float>(fSettings,"IMU.NoiseAcc",found);
@@ -432,6 +455,7 @@ namespace ORB_SLAM3 {
     }
 
     void Settings::readRGBD(cv::FileStorage& fSettings) {
+        FT_CALC_SCOPE();
         bool found;
 
         depthMapFactor_ = readParameter<float>(fSettings,"RGBD.DepthMapFactor",found);
@@ -441,6 +465,7 @@ namespace ORB_SLAM3 {
     }
 
     void Settings::readORB(cv::FileStorage &fSettings) {
+        FT_CALC_SCOPE();
         bool found;
 
         nFeatures_ = readParameter<int>(fSettings,"ORBextractor.nFeatures",found);
@@ -451,6 +476,7 @@ namespace ORB_SLAM3 {
     }
 
     void Settings::readViewer(cv::FileStorage &fSettings) {
+        FT_CALC_SCOPE();
         bool found;
 
         keyFrameSize_ = readParameter<float>(fSettings,"Viewer.KeyFrameSize",found);
@@ -470,6 +496,7 @@ namespace ORB_SLAM3 {
     }
 
     void Settings::readLoadAndSave(cv::FileStorage &fSettings) {
+        FT_CALC_SCOPE();
         bool found;
 
         sLoadFrom_ = readParameter<string>(fSettings,"System.LoadAtlasFromFile",found,false);
@@ -477,12 +504,14 @@ namespace ORB_SLAM3 {
     }
 
     void Settings::readOtherParameters(cv::FileStorage& fSettings) {
+        FT_CALC_SCOPE();
         bool found;
 
         thFarPoints_ = readParameter<float>(fSettings,"System.thFarPoints",found,false);
     }
 
     void Settings::precomputeRectificationMaps() {
+        FT_CALC_SCOPE();
         //Precompute rectification maps, new calibrations, ...
         cv::Mat K1 = static_cast<Pinhole*>(calibration1_)->toK();
         K1.convertTo(K1,CV_64F);
