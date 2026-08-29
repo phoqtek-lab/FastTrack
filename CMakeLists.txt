@@ -33,7 +33,7 @@ set(CMAKE_CUDA_FLAGS_RELEASE "-O3 --use_fast_math -Xcompiler -w --relaxed-conste
 # =============================================================================
 
 # Enforce standard C++14 compliance cleanly
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_definitions(-DCOMPILEDWITHC11)
 
@@ -48,21 +48,49 @@ find_package(OpenMP REQUIRED)
 find_package(Threads REQUIRED)
 find_package(realsense2)
 
-set(FASTTRACK_CUDA_INCLUDE_DIR "/home/fci/Desktop/jetson_cuda_includes" CACHE PATH
-    "Fallback CUDA host headers copied from the Jetson when toolkit headers are unavailable")
-if(EXISTS "${FASTTRACK_CUDA_INCLUDE_DIR}/cuda.h")
-  message(STATUS "Using FastTrack CUDA host headers from ${FASTTRACK_CUDA_INCLUDE_DIR}")
+set(FASTTRACK_CUDA_INCLUDE_DIR "" CACHE PATH
+    "Optional additional CUDA host headers; CMake toolkit discovery is used by default")
+if(FASTTRACK_CUDA_INCLUDE_DIR)
+  if(NOT EXISTS "${FASTTRACK_CUDA_INCLUDE_DIR}/cuda.h")
+    message(FATAL_ERROR
+      "FASTTRACK_CUDA_INCLUDE_DIR does not contain cuda.h: ${FASTTRACK_CUDA_INCLUDE_DIR}")
+  endif()
+  message(STATUS "Using additional FastTrack CUDA host headers from ${FASTTRACK_CUDA_INCLUDE_DIR}")
   include_directories("${FASTTRACK_CUDA_INCLUDE_DIR}")
   set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -I${FASTTRACK_CUDA_INCLUDE_DIR}")
 endif()
 
-set(GARUDANAV_SYSTEM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../garudanav_system" CACHE PATH
-    "garudanav_system checkout providing the reviewed NanoLog runtime")
-set(GARUDANAV_NANOLOG_RUNTIME_DIR "${GARUDANAV_SYSTEM_DIR}/third_party/nanolog/runtime")
+set(GARUDANAV_SYSTEM_DIR "" CACHE PATH
+    "Optional garudanav_system checkout; CMake searches workspace prefixes when unset")
+if(GARUDANAV_SYSTEM_DIR)
+  set(GARUDANAV_NANOLOG_RUNTIME_DIR
+      "${GARUDANAV_SYSTEM_DIR}/third_party/nanolog/runtime")
+else()
+  find_path(GARUDANAV_NANOLOG_RUNTIME_DIR
+    NAMES NanoLogCpp17.h
+    HINTS
+      ${CMAKE_PREFIX_PATH}
+      "$ENV{GARUDANAV_SYSTEM_DIR}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../garudanav_system"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../../garudanav_ws/src/garudanav_system"
+    PATH_SUFFIXES third_party/nanolog/runtime)
+  if(GARUDANAV_NANOLOG_RUNTIME_DIR)
+    get_filename_component(_garudanav_nanolog_dir
+                           "${GARUDANAV_NANOLOG_RUNTIME_DIR}" DIRECTORY)
+    get_filename_component(GARUDANAV_SYSTEM_DIR
+                           "${_garudanav_nanolog_dir}" DIRECTORY)
+    get_filename_component(GARUDANAV_SYSTEM_DIR
+                           "${GARUDANAV_SYSTEM_DIR}" DIRECTORY)
+  endif()
+endif()
 if(NOT EXISTS "${GARUDANAV_NANOLOG_RUNTIME_DIR}/NanoLogCpp17.h")
   message(FATAL_ERROR
-    "NanoLog runtime not found under ${GARUDANAV_NANOLOG_RUNTIME_DIR}; "
-    "set GARUDANAV_SYSTEM_DIR to the garudanav_system checkout")
+    "CMake could not discover the NanoLog runtime; provide a CMake prefix "
+    "containing garudanav_system or set GARUDANAV_SYSTEM_DIR locally")
+endif()
+if(NOT EXISTS "${GARUDANAV_SYSTEM_DIR}/src/nanolog_stubs.cc")
+  message(FATAL_ERROR
+    "CMake discovered NanoLog but not garudanav_system/src/nanolog_stubs.cc")
 endif()
 
 add_library(fasttrack_nanolog_runtime STATIC

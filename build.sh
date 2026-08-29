@@ -8,8 +8,8 @@ tsan_build_dir="${script_dir}/build-tsan"
 leak_build_dir="${script_dir}/build-leak"
 benchmark_build_dir="${script_dir}/build-benchmark"
 lint_quick_build_dir="${script_dir}/build-lint-quick"
-shared_system_dir="${GARUDANAV_SYSTEM_DIR:-${script_dir}/../garudanav_system}"
-cuda_include_dir="${JETSON_CUDA_INCLUDES:-/home/fci/Desktop/jetson_cuda_includes}"
+shared_system_dir="${GARUDANAV_SYSTEM_DIR:-}"
+cuda_include_dir="${JETSON_CUDA_INCLUDES:-}"
 
 usage() {
   echo "Usage: $0 [build|test|lint-quick|lint|sanitize|tsan|leak-check|benchmark|all|clean]" >&2
@@ -60,11 +60,20 @@ require_file() {
 configure_build() {
   local target_dir="$1"
   shift
-  cmake -S "$script_dir" -B "$target_dir" -G Ninja \
-    -DCMAKE_BUILD_TYPE="${FASTTRACK_BUILD_TYPE:-RelWithDebInfo}" \
-    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-    -DGARUDANAV_SYSTEM_DIR="$shared_system_dir" \
-    -DFASTTRACK_CUDA_INCLUDE_DIR="$cuda_include_dir" "$@"
+  local cmake_args=(
+    -S "$script_dir"
+    -B "$target_dir"
+    -G Ninja
+    "-DCMAKE_BUILD_TYPE=${FASTTRACK_BUILD_TYPE:-RelWithDebInfo}"
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+  )
+  if [[ -n "$shared_system_dir" ]]; then
+    cmake_args+=("-DGARUDANAV_SYSTEM_DIR=$shared_system_dir")
+  fi
+  if [[ -n "$cuda_include_dir" ]]; then
+    cmake_args+=("-DFASTTRACK_CUDA_INCLUDE_DIR=$cuda_include_dir")
+  fi
+  cmake "${cmake_args[@]}" "$@"
 }
 
 build_project() {
