@@ -2027,8 +2027,16 @@ void Tracking::UpdateZuptState()
         varA /= n;
     }
 
+    bool velocityGate = false;
+    double lastVelNorm = 0.0;
+    if(mLastFrame.HasVelocity())
+    {
+        lastVelNorm = mLastFrame.GetVelocity().norm();
+        velocityGate = (lastVelNorm > mZuptVelGate);
+    }
+
     const bool belowTh = (varG < mZuptGyroVarTh) && (varA < mZuptAccelVarTh);
-    const bool forcedMotion = gyroMeanGate || accelNormGate;
+    const bool forcedMotion = gyroMeanGate || accelNormGate || velocityGate;
 
     if(mbZuptActive)
     {
@@ -2036,7 +2044,10 @@ void Tracking::UpdateZuptState()
         {
             mbZuptActive = false;
             mZuptExitCount = 0;
-            cout << "ZUPT: exiting stationary (motion gate) gyroM=" << gyroMeanGate << " accelN=" << accelNormGate << endl;
+            cout << "ZUPT: exiting stationary (motion gate) gyroM=" << gyroMeanGate
+                 << " accelN=" << accelNormGate
+                 << " velGate=" << velocityGate
+                 << " vel=" << lastVelNorm << endl;
         }
         else if(belowTh || (varG < mZuptExitRatio * mZuptGyroVarTh && varA < mZuptExitRatio * mZuptAccelVarTh))
         {
@@ -2054,7 +2065,7 @@ void Tracking::UpdateZuptState()
     }
     else
     {
-        if(belowTh)
+        if(belowTh && !forcedMotion)
         {
             mZuptEnterCount++;
             if(mZuptEnterCount >= mZuptHystEnter)

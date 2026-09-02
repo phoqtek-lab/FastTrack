@@ -4807,8 +4807,9 @@ int Optimizer::PoseInertialOptimizationLastKeyFrame(Frame *pFrame, bool bRecInit
     ear->setInformation(InfoA);
     optimizer.addEdge(ear);
 
-    // ZUPT: if stationary, prior on current-frame velocity = 0
-    if(pFrame->IsStationary())
+    // ZUPT: apply the hard zero-velocity prior only when the frame velocity
+    // is already near zero. Smooth climbs can look low-variance in IMU space.
+    if(pFrame->IsStationary() && pFrame->HasVelocity() && pFrame->GetVelocity().norm() < 0.15f)
     {
         EdgePriorVelocity* epv = new EdgePriorVelocity();
         epv->setVertex(0,VV);
@@ -5206,8 +5207,9 @@ int Optimizer::PoseInertialOptimizationLastFrame(Frame *pFrame, bool bRecInit)
     ear->setInformation(InfoA);
     optimizer.addEdge(ear);
 
-    // ZUPT: if stationary, prior on current-frame velocity = 0
-    if(pFrame->IsStationary())
+    // ZUPT: apply the hard zero-velocity prior only when the frame velocity
+    // is already near zero. Smooth climbs can look low-variance in IMU space.
+    if(pFrame->IsStationary() && pFrame->HasVelocity() && pFrame->GetVelocity().norm() < 0.15f)
     {
         EdgePriorVelocity* epv = new EdgePriorVelocity();
         epv->setVertex(0,VV);
