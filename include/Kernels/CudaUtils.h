@@ -37,8 +37,10 @@ class CudaUtils {
         static bool cameraIsFisheye;
         // Per-level FAST candidate capacity for the GPU corner buffers.
         // Replaces the old pixel-count sizing (w*h per level), which over-allocated
-        // multiple GB per frame on 720p. Budget is derived from the feature count
-        // with generous headroom; the corner buffers are sized level*budget.
+        // multiple GB per frame on 720p. The budget derives from the configured
+        // image resolution only (max(w*h/16, 16384), set in allocMemory) so it is
+        // identical across the primary and 5*nfeatures map-init extractors;
+        // corner buffers are sized level*budget.
         static int maxCandidatesPerLevel;
 };
 

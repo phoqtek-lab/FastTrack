@@ -1345,13 +1345,20 @@ namespace ORB_SLAM3
     void ORBextractor::allocMemory(int w, int h, int imageStep) {
         FT_CALC_SCOPE();
         // Single source of truth for the per-level FAST candidate capacity.
-        // MUST be a FIXED, instance-independent constant: ORB-SLAM3 creates a
-        // second ORBextractor (with 5*nfeatures) during map-init, and if this
-        // value depended on this->nfeatures it would be overwritten by that
-        // instance, causing the FIRST extractor's kernels to index its smaller
-        // corner buffer out of bounds. Keeping it fixed guarantees all instances
-        // agree on the per-level stride and capacity.
-        CudaUtils::maxCandidatesPerLevel = 200000;
+        // MUST be an instance-independent constant: ORB-SLAM3 creates a second
+        // ORBextractor (with 5*nfeatures) during map-init, and if this value
+        // depended on this->nfeatures it would be overwritten by that instance,
+        // causing the FIRST extractor's kernels to index its smaller corner
+        // buffer out of bounds. So it is derived ONLY from the configured image
+        // resolution (w, h), which every instance shares:
+        //   budget = max(w*h/16, 16384)   // 6.25% of level-0 pixels
+        // The GPU FAST kernels store strict 3x3 local-maxima corners per level,
+        // whose count is bounded far below the pixel area (observed ~1100/level
+        // in this 1280x720 / 1250-feature stack, ~50x headroom here). This keeps
+        // the allocation ~3.5x smaller than the old flat 200000/level while being
+        // effectively impossible to saturate on realistic scenes, which removes
+        // the NvMap/CMA pressure that could fail the d_corner_buffer cudaMalloc.
+        CudaUtils::maxCandidatesPerLevel = std::max((w * h) / 16, 16384);
         checkCudaError(cudaMalloc(&(this->d_R), sizeof(uint8_t)*w*h*this->nlevels), "[ORBextractor::] Failed to allocate memory for d_R");
         checkCudaError(cudaMalloc(&(this->d_R_low), sizeof(uint8_t)*w*h*this->nlevels), "[ORBextractor::] Failed to allocate memory for d_R_low");
 
