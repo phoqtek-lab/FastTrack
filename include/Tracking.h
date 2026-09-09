@@ -340,7 +340,11 @@ protected:
     double mZuptExitRatio;   // multiplier on thresholds for exiting stationary
     double mZuptGyroMeanGate;  // abs mean gyro magnitude above which motion is forced (rad/s)
     double mZuptAccelNormGate; // |mean accel magnitude - g| above which motion is forced (m/s^2)
-    double mZuptVelGate;       // predicted velocity above which the ZUPT output hold is skipped (m/s)
+    double mZuptVelGate;       // low gate used to block entering stationary (m/s)
+    double mZuptVelExitTh;     // sustained EMA velocity above which the hold is released (m/s)
+    int    mZuptVelHyst;       // consecutive EMAs above the exit threshold before release
+    int    mZuptVelExitCount;  // velocity-exit hysteresis counter
+    double mZuptVelEma;        // EMA of the tracked velocity magnitude (m/s)
     bool mbZuptActive;       // current stationarity state
     int mZuptEnterCount;
     int mZuptExitCount;

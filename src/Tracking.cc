@@ -661,6 +661,10 @@ void Tracking::newParameterLoader(Settings *settings) {
     mZuptGyroMeanGate = 0.03;
     mZuptAccelNormGate = 0.3;
     mZuptVelGate = 0.05;
+    mZuptVelExitTh = 0.15;
+    mZuptVelHyst = 3;
+    mZuptVelExitCount = 0;
+    mZuptVelEma = 0.0;
     mbZuptActive = false;
     mZuptEnterCount = 0;
     mZuptExitCount = 0;
@@ -698,6 +702,12 @@ void Tracking::newParameterLoader(Settings *settings) {
         node = fZupt["IMU.ZUPT.VelGate"];
         if(!node.empty() && node.isReal() && node.real() > 0)
             mZuptVelGate = node.real();
+        node = fZupt["IMU.ZUPT.VelExitTh"];
+        if(!node.empty() && node.isReal() && node.real() > 0)
+            mZuptVelExitTh = node.real();
+        node = fZupt["IMU.ZUPT.VelHyst"];
+        if(!node.empty() && node.isInt() && node.operator int() > 0)
+            mZuptVelHyst = node.operator int();
     }
 
     if(mbZuptEnabled)
@@ -706,7 +716,8 @@ void Tracking::newParameterLoader(Settings *settings) {
              << ", accelVarTh=" << mZuptAccelVarTh << ", hystEnter=" << mZuptHystEnter
              << ", hystExit=" << mZuptHystExit << ", exitRatio=" << mZuptExitRatio
              << ", gyroMeanGate=" << mZuptGyroMeanGate << ", accelNormGate=" << mZuptAccelNormGate
-             << ", velGate=" << mZuptVelGate << ")" << endl;
+             << ", velGate=" << mZuptVelGate << ", velExitTh=" << mZuptVelExitTh
+             << ", velHyst=" << mZuptVelHyst << ")" << endl;
     }
     else
     {
@@ -1508,10 +1519,16 @@ bool Tracking::ParseIMUParamFile(cv::FileStorage &fSettings)
     mZuptAccelNormGate = (node.isReal() && node.real() > 0) ? node.real() : 0.3;
     node = fSettings["IMU.ZUPT.VelGate"];
     mZuptVelGate = (node.isReal() && node.real() > 0) ? node.real() : 0.05;
+    node = fSettings["IMU.ZUPT.VelExitTh"];
+    mZuptVelExitTh = (node.isReal() && node.real() > 0) ? node.real() : 0.15;
+    node = fSettings["IMU.ZUPT.VelHyst"];
+    mZuptVelHyst = (node.isInt() && node.operator int() > 0) ? node.operator int() : 3;
 
     mbZuptActive = false;
     mZuptEnterCount = 0;
     mZuptExitCount = 0;
+    mZuptVelExitCount = 0;
+    mZuptVelEma = 0.0;
 
     if(mbZuptEnabled)
     {
@@ -1519,7 +1536,8 @@ bool Tracking::ParseIMUParamFile(cv::FileStorage &fSettings)
              << ", accelVarTh=" << mZuptAccelVarTh << ", hystEnter=" << mZuptHystEnter
              << ", hystExit=" << mZuptHystExit << ", exitRatio=" << mZuptExitRatio
              << ", gyroMeanGate=" << mZuptGyroMeanGate << ", accelNormGate=" << mZuptAccelNormGate
-             << ", velGate=" << mZuptVelGate << ")" << endl;
+             << ", velGate=" << mZuptVelGate << ", velExitTh=" << mZuptVelExitTh
+             << ", velHyst=" << mZuptVelHyst << ")" << endl;
     }
     else
     {
@@ -1937,7 +1955,7 @@ bool Tracking::PredictStateIMU()
         Eigen::Vector3f Vwb2 = Vwb1 + t12*Gz + Rwb1 * mpImuPreintegratedFromLastKF->GetDeltaVelocity(mpLastKeyFrame->GetImuBias());
 
         // ZUPT output hold: if stationary, prevent integration from accumulating
-        if(mCurrentFrame.IsStationary() && Vwb2.norm() < mZuptVelGate)
+        if(mCurrentFrame.IsStationary() && Vwb2.norm() < mZuptVelExitTh)
         {
             Vwb2.setZero();
             twb2 = twb1;
@@ -1962,7 +1980,7 @@ bool Tracking::PredictStateIMU()
         Eigen::Vector3f Vwb2 = Vwb1 + t12*Gz + Rwb1 * mCurrentFrame.mpImuPreintegratedFrame->GetDeltaVelocity(mLastFrame.mImuBias);
 
         // ZUPT output hold: if stationary, prevent integration from accumulating
-        if(mCurrentFrame.IsStationary() && Vwb2.norm() < mZuptVelGate)
+        if(mCurrentFrame.IsStationary() && Vwb2.norm() < mZuptVelExitTh)
         {
             Vwb2.setZero();
             twb2 = twb1;
@@ -2032,7 +2050,37 @@ void Tracking::UpdateZuptState()
     if(mLastFrame.HasVelocity())
     {
         lastVelNorm = mLastFrame.GetVelocity().norm();
-        velocityGate = (lastVelNorm > mZuptVelGate);
+        // EMA of the tracked velocity magnitude so a single noisy reading does
+        // not flip the ZUPT hold. During hover the tracked velocity is exactly
+        // the signal that drifts, so releasing on it requires a higher,
+        // sustained threshold (mZuptVelExitTh) with hysteresis, instead of the
+        // 0.05 m/s single-frame gate that dropped the hold during dead-still
+        // hover in the Sep-4 flights.
+        const double velAlpha = 0.3;
+        mZuptVelEma = velAlpha * lastVelNorm + (1.0 - velAlpha) * mZuptVelEma;
+        if(mbZuptActive)
+        {
+            if(mZuptVelEma > mZuptVelExitTh)
+            {
+                mZuptVelExitCount++;
+                if(mZuptVelExitCount >= mZuptVelHyst)
+                    velocityGate = true;
+            }
+            else if(mZuptVelEma <= mZuptVelGate)
+            {
+                mZuptVelExitCount = 0;
+            }
+        }
+        else
+        {
+            // Block entering stationary while the tracked velocity is
+            // non-trivial (e.g. smooth constant-velocity flight).
+            velocityGate = (mZuptVelEma > mZuptVelGate);
+        }
+    }
+    else
+    {
+        mZuptVelEma *= 0.9;
     }
 
     const bool belowTh = (varG < mZuptGyroVarTh) && (varA < mZuptAccelVarTh);
