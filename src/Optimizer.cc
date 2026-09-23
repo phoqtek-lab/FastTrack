@@ -1289,6 +1289,51 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
         pCurrentMap->msFixedKFs.insert(pKFi->mnId);
     }
 
+    // External absolute reference anchoring (compass yaw + barometric altitude).
+    // Pulls every optimizable local keyframe toward the absolute yaw/alt targets
+    // injected by the wrapper, killing the yaw and altitude drifts that otherwise
+    // corrupt x/y over long legs. Only active on keyframes carrying a latched
+    // external measurement; vanilla runs (feature disabled) add zero edges.
+    if(pMap->IsInertial())
+    {
+        for(list<KeyFrame*>::iterator lit=lLocalKeyFrames.begin(), lend=lLocalKeyFrames.end(); lit!=lend; lit++)
+        {
+            KeyFrame* pKFi = *lit;
+            if(pKFi->mnId == pMap->GetInitKFid())
+                continue;
+
+            g2o::VertexSE3Expmap* vSE3 = static_cast<g2o::VertexSE3Expmap*>(optimizer.vertex(pKFi->mnId));
+            if(!vSE3)
+                continue;
+
+            if(pKFi->GetHasExternalYaw())
+            {
+                EdgeExtMagYaw* eYaw = new EdgeExtMagYaw();
+                eYaw->setVertex(0, vSE3);
+                eYaw->setMeasurement(pKFi->GetExternalYawSlam());
+                const double varYaw = pKFi->GetExternalYawSigmaRad() * pKFi->GetExternalYawSigmaRad();
+                eYaw->setInformation(Eigen::Matrix<double,1,1>::Identity() / varYaw);
+                g2o::RobustKernelHuber* rkYaw = new g2o::RobustKernelHuber();
+                rkYaw->setDelta(2.0);
+                eYaw->setRobustKernel(rkYaw);
+                optimizer.addEdge(eYaw);
+            }
+
+            if(pKFi->GetHasExternalAlt())
+            {
+                EdgeExtBaroAlt* eAlt = new EdgeExtBaroAlt();
+                eAlt->setVertex(0, vSE3);
+                eAlt->setMeasurement(pKFi->GetExternalAltSlam());
+                const double varAlt = pKFi->GetExternalAltSigmaM() * pKFi->GetExternalAltSigmaM();
+                eAlt->setInformation(Eigen::Matrix<double,1,1>::Identity() / varAlt);
+                g2o::RobustKernelHuber* rkAlt = new g2o::RobustKernelHuber();
+                rkAlt->setDelta(2.0);
+                eAlt->setRobustKernel(rkAlt);
+                optimizer.addEdge(eAlt);
+            }
+        }
+    }
+
     // Set MapPoint vertices
     const int nExpectedSize = (lLocalKeyFrames.size()+lFixedCameras.size())*lLocalMapPoints.size();
 

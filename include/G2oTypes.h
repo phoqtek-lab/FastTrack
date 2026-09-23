@@ -24,6 +24,7 @@
 #include "Thirdparty/g2o/g2o/types/types_sba.h"
 #include "Thirdparty/g2o/g2o/core/base_multi_edge.h"
 #include "Thirdparty/g2o/g2o/core/base_unary_edge.h"
+#include "Thirdparty/g2o/g2o/types/types_six_dof_expmap.h"
 
 #include<opencv2/core/core.hpp>
 
@@ -835,6 +836,41 @@ public:
         linearizeOplus();
         return _jacobianOplusXi.transpose()*information()*_jacobianOplusXi;
     }
+};
+
+
+// Prior for absolute world yaw (magnetometer/compass heading injected by the wrapper).
+// Measurement is the target camera yaw expressed in the SLAM world frame (rad).
+// Residual is the wrapped angular error against the SE3 camera pose vertex.
+class EdgeExtMagYaw : public g2o::BaseUnaryEdge<1,double,g2o::VertexSE3Expmap>
+{
+public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+    EdgeExtMagYaw(){}
+
+    virtual bool read(std::istream& is){return false;}
+    virtual bool write(std::ostream& os) const{return false;}
+
+    void computeError();
+    virtual void linearizeOplus();
+};
+
+
+// Prior for absolute world altitude (barometer injected by the wrapper).
+// Measurement is the target camera world z expressed in the SLAM world frame (m).
+class EdgeExtBaroAlt : public g2o::BaseUnaryEdge<1,double,g2o::VertexSE3Expmap>
+{
+public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+    EdgeExtBaroAlt(){}
+
+    virtual bool read(std::istream& is){return false;}
+    virtual bool write(std::ostream& os) const{return false;}
+
+    void computeError();
+    virtual void linearizeOplus();
 };
 
 

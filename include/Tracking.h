@@ -90,6 +90,12 @@ public:
     // Use this function if you have deactivated local mapping and you only want to localize the camera.
     void InformOnlyTracking(const bool &flag);
 
+    // External absolute reference injection (magnetometer heading + barometric altitude).
+    // Called by the wrapper thread before each TrackMonocular. When the flags are false
+    // (feature disabled at launch) the external-reference path stays inert and the
+    // system behaves exactly as vanilla.
+    void SetExternalReference(const bool bHasYaw, const double yawDeg, const bool bHasAlt, const double altM);
+
     void UpdateFrameIMU(const float s, const IMU::Bias &b, KeyFrame* pCurrentKeyFrame);
     KeyFrame* GetLastKeyFrame()
     {
@@ -226,6 +232,8 @@ protected:
 
     bool NeedNewKeyFrame();
     void CreateNewKeyFrame();
+    void LatchExternalRef();                      // compute yaw/z offsets once (IMU-initialized)
+    void SetKeyFrameExternalRefs(KeyFrame* pKF);  // copy latched refs onto a new keyframe
 
     // Perform preintegration from last frame
     void PreintegrateIMU();
@@ -349,6 +357,20 @@ protected:
     int mZuptEnterCount;
     int mZuptExitCount;
     std::deque<IMU::Point> mlZuptImuWindow;
+
+    // External absolute reference (compass heading + barometric altitude) anchoring.
+    bool mbExtRefHasYaw;            // a valid mag heading is available
+    bool mbExtRefHasAlt;            // a valid baro altitude is available
+    double mExtRefYawDeg;           // latest compass heading (deg, 0=N)
+    double mExtRefAltM;             // latest baro altitude (m, rel. to home/takeoff)
+    bool mExtRefLatched;            // offsets computed (once, after IMU init)
+    unsigned long mExtRefLatchInitKF; // map init KF id at latch time (re-latch on reset)
+    double mExtMagYawOffsetRad;     // slam yaw - mag yaw (constant; absorbs Tcb + scalar offsets)
+    double mExtBaroAltOffsetM;      // slam z - baro alt (constant; absorbs origin offset)
+    double mExtMagYawSigmaDeg;      // trust sigma for the mag yaw prior
+    double mExtBaroAltSigmaM;       // trust sigma for the baro alt prior
+    bool mbExtRefPrinted;           // one-shot info print
+    std::mutex mMutexExtRef;
 
     unsigned int mnFirstFrameId;
     unsigned int mnInitialFrameId;

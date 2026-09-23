@@ -728,6 +728,34 @@ void Tracking::newParameterLoader(Settings *settings) {
     {
         cout << endl << "ZUPT loaded from settings file" << endl;
     }
+
+    // External absolute reference (compass heading + barometric altitude) parameters.
+    mbExtRefHasYaw = false;
+    mbExtRefHasAlt = false;
+    mExtRefYawDeg = 0.0;
+    mExtRefAltM = 0.0;
+    mExtRefLatched = false;
+    mExtRefLatchInitKF = 0;
+    mExtMagYawOffsetRad = 0.0;
+    mExtBaroAltOffsetM = 0.0;
+    mExtMagYawSigmaDeg = 8.0;   // default trust: 8 deg heading prior
+    mExtBaroAltSigmaM = 3.0;    // default trust: 3 m altitude prior
+    mbExtRefPrinted = false;
+
+    cv::FileStorage fExt(mSettingsPath, cv::FileStorage::READ);
+    if(fExt.isOpened())
+    {
+        cv::FileNode node = fExt["IMU.EXT.MagYawSigmaDeg"];
+        if(!node.empty() && node.isReal() && node.real() > 0)
+            mExtMagYawSigmaDeg = node.real();
+        node = fExt["IMU.EXT.BaroAltSigmaM"];
+        if(!node.empty() && node.isReal() && node.real() > 0)
+            mExtBaroAltSigmaM = node.real();
+    }
+
+    cout << "External ref (compass+baro) ready: magYawSigmaDeg=" << mExtMagYawSigmaDeg
+         << ", baroAltSigmaM=" << mExtBaroAltSigmaM
+         << " (waiting for wrapper data; enable via launch param mag_baro_enable=true)" << endl;
 }
 
 bool Tracking::ParseCamParamFile(cv::FileStorage &fSettings)
@@ -3662,6 +3690,96 @@ bool Tracking::NeedNewKeyFrame()
         return false;
 }
 
+void Tracking::SetExternalReference(const bool bHasYaw, const double yawDeg, const bool bHasAlt, const double altM)
+{
+    unique_lock<mutex> lock(mMutexExtRef);
+    mbExtRefHasYaw = bHasYaw;
+    mbExtRefHasAlt = bHasAlt;
+    if(bHasYaw)
+        mExtRefYawDeg = yawDeg;
+    if(bHasAlt)
+        mExtRefAltM = altM;
+    if((bHasYaw || bHasAlt) && !mbExtRefPrinted)
+    {
+        cout << "External reference (magnetometer yaw + barometric alt) feed ENABLED:"
+             << " magYawSigmaDeg=" << mExtMagYawSigmaDeg
+             << " baroAltSigmaM=" << mExtBaroAltSigmaM << endl;
+        mbExtRefPrinted = true;
+    }
+}
+
+void Tracking::LatchExternalRef()
+{
+    // Must hold mMutexExtRef. Requires the map to be IMU-initialized so that
+    // scale/gravity are settled and the world Z axis is gravity-aligned.
+    if(mExtRefLatched)
+        return;
+    if(!mpAtlas->isImuInitialized())
+        return;
+
+    const Sophus::SE3f Twc = mCurrentFrame.GetPose().inverse();
+    const Eigen::Matrix3f R = Twc.rotationMatrix();
+    const double slamYaw = atan2((double)R(1,0), (double)R(0,0));
+    const double slamZ = (double)mCurrentFrame.GetCameraCenter()(2);
+
+    bool latched = false;
+    if(mbExtRefHasYaw)
+    {
+        const double magYawRad = mExtRefYawDeg * M_PI / 180.0;
+        mExtMagYawOffsetRad = slamYaw - magYawRad;
+        latched = true;
+    }
+    if(mbExtRefHasAlt)
+    {
+        mExtBaroAltOffsetM = slamZ - mExtRefAltM;
+        latched = true;
+    }
+    if(latched)
+    {
+        mExtRefLatched = true;
+        mExtRefLatchInitKF = mpAtlas->GetCurrentMap()->GetInitKFid();
+        cout << "External ref latched: magYawOffsetRad=" << mExtMagYawOffsetRad
+             << ", baroAltOffsetM=" << mExtBaroAltOffsetM << endl;
+    }
+}
+
+void Tracking::SetKeyFrameExternalRefs(KeyFrame* pKF)
+{
+    unique_lock<mutex> lock(mMutexExtRef);
+
+    // Re-latch if the active map changed (reset/relocalization re-zeroes the frame)
+    if(mExtRefLatched && mExtRefLatchInitKF != mpAtlas->GetCurrentMap()->GetInitKFid())
+        mExtRefLatched = false;
+    LatchExternalRef();
+
+    if(!mExtRefLatched)
+    {
+        pKF->ClearExternalYaw();
+        pKF->ClearExternalAlt();
+        return;
+    }
+
+    if(mbExtRefHasYaw)
+    {
+        const double targetYaw = mExtRefYawDeg * M_PI / 180.0 + mExtMagYawOffsetRad;
+        pKF->SetExternalYaw(targetYaw, mExtMagYawSigmaDeg * M_PI / 180.0);
+    }
+    else
+    {
+        pKF->ClearExternalYaw();
+    }
+
+    if(mbExtRefHasAlt)
+    {
+        const double targetAlt = mExtRefAltM + mExtBaroAltOffsetM;
+        pKF->SetExternalAlt(targetAlt, mExtBaroAltSigmaM);
+    }
+    else
+    {
+        pKF->ClearExternalAlt();
+    }
+}
+
 void Tracking::CreateNewKeyFrame()
 {
     if(mpLocalMapper->IsInitializing() && !mpAtlas->isImuInitialized())
@@ -3676,6 +3794,7 @@ void Tracking::CreateNewKeyFrame()
         pKF->bImu = true;
 
     pKF->SetNewBias(mCurrentFrame.mImuBias);
+    SetKeyFrameExternalRefs(pKF);
     mpReferenceKF = pKF;
     mCurrentFrame.mpReferenceKF = pKF;
 

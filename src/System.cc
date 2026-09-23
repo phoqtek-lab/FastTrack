@@ -506,6 +506,11 @@ Sophus::SE3f System::TrackMonocular(const cv::Mat &im, const double &timestamp, 
 
 
 
+void System::SetExternalReference(const bool bHasYaw, const double yawDeg, const bool bHasAlt, const double altM)
+{
+    mpTracker->SetExternalReference(bHasYaw, yawDeg, bHasAlt, altM);
+}
+
 void System::ActivateLocalizationMode()
 {
     unique_lock<mutex> lock(mMutexMode);

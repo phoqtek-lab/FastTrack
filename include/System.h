@@ -122,6 +122,11 @@ public:
     // Returns the camera pose (empty if tracking fails).
     Sophus::SE3f TrackMonocular(const cv::Mat &im, const double &timestamp, const vector<IMU::Point>& vImuMeas = vector<IMU::Point>(), string filename="");
 
+    // Inject an external absolute reference into the running SLAM system
+    // (magnetometer/compass heading in deg and barometric altitude in m).
+    // When both flags are false the external-reference path stays inert.
+    void SetExternalReference(const bool bHasYaw, const double yawDeg, const bool bHasAlt, const double altM);
+
 
     // This stops local mapping thread (map building) and performs only camera tracking.
     void ActivateLocalizationMode();

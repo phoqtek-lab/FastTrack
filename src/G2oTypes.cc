@@ -821,6 +821,74 @@ void EdgePriorVelocity::linearizeOplus()
 
 }
 
+namespace {
+
+double ExtWrapToPi(const double a)
+{
+    double e = a;
+    while(e > M_PI)  e -= 2.0*M_PI;
+    while(e < -M_PI) e += 2.0*M_PI;
+    return e;
+}
+
+// Camera yaw in the SLAM world frame: pose estimate is World->Camera (Rcw),
+// so the world orientation is Rcw^T; its Z-yaw is atan2(Rcw(0,1), Rcw(0,0)).
+double ExtYawOf(const g2o::SE3Quat &E)
+{
+    const Eigen::Matrix3d R = E.rotation().toRotationMatrix();
+    return atan2(R(0,1), R(0,0));
+}
+
+} // namespace
+
+void EdgeExtMagYaw::computeError()
+{
+    const g2o::VertexSE3Expmap* v = static_cast<const g2o::VertexSE3Expmap*>(_vertices[0]);
+    _error[0] = ExtWrapToPi(ExtYawOf(v->estimate()) - _measurement);
+}
+
+void EdgeExtMagYaw::linearizeOplus()
+{
+    const g2o::VertexSE3Expmap* v = static_cast<const g2o::VertexSE3Expmap*>(_vertices[0]);
+    const g2o::SE3Quat base = v->estimate();
+    const double err0 = _error[0];
+    const double eps = 1e-7;
+    for(int i = 0; i < 6; i++)
+    {
+        double upd[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        upd[i] = eps;
+        g2o::VertexSE3Expmap tmp;
+        tmp.setEstimate(base);
+        tmp.oplusImpl(upd);
+        const double err1 = ExtWrapToPi(ExtYawOf(tmp.estimate()) - _measurement);
+        _jacobianOplusXi(0,i) = (err1 - err0) / eps;
+    }
+}
+
+void EdgeExtBaroAlt::computeError()
+{
+    const g2o::VertexSE3Expmap* v = static_cast<const g2o::VertexSE3Expmap*>(_vertices[0]);
+    _error[0] = v->estimate().translation().z() - _measurement;
+}
+
+void EdgeExtBaroAlt::linearizeOplus()
+{
+    const g2o::VertexSE3Expmap* v = static_cast<const g2o::VertexSE3Expmap*>(_vertices[0]);
+    const g2o::SE3Quat base = v->estimate();
+    const double err0 = base.translation().z() - _measurement;
+    const double eps = 1e-7;
+    for(int i = 0; i < 6; i++)
+    {
+        double upd[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        upd[i] = eps;
+        g2o::VertexSE3Expmap tmp;
+        tmp.setEstimate(base);
+        tmp.oplusImpl(upd);
+        const double err1 = tmp.estimate().translation().z() - _measurement;
+        _jacobianOplusXi(0,i) = (err1 - err0) / eps;
+    }
+}
+
 // SO3 FUNCTIONS
 Eigen::Matrix3d ExpSO3(const Eigen::Vector3d &w)
 {

@@ -191,6 +191,13 @@ class KeyFrame
         ar & boost::serialization::make_array(mVw.data(), mVw.size());
         ar & boost::serialization::make_array(mOwb.data(), mOwb.size());
         ar & mbHasVelocity;
+        // External absolute reference anchoring (compass yaw + baro alt)
+        ar & mbHasExtYaw;
+        ar & mExtYawSlam;
+        ar & mExtYawSigmaRad;
+        ar & mbHasExtAlt;
+        ar & mExtAltSlam;
+        ar & mExtAltSigmaM;
     }
 
 public:
@@ -201,6 +208,18 @@ public:
     // Pose functions
     void SetPose(const Sophus::SE3f &Tcw);
     void SetVelocity(const Eigen::Vector3f &Vw_);
+
+    // External absolute reference anchoring (compass yaw + baro alt), set by Tracking
+    void SetExternalYaw(const double yawSlam, const double sigmaRad){ mbHasExtYaw = true; mExtYawSlam = yawSlam; mExtYawSigmaRad = sigmaRad; }
+    void ClearExternalYaw(){ mbHasExtYaw = false; }
+    void SetExternalAlt(const double altSlam, const double sigmaM){ mbHasExtAlt = true; mExtAltSlam = altSlam; mExtAltSigmaM = sigmaM; }
+    void ClearExternalAlt(){ mbHasExtAlt = false; }
+    bool GetHasExternalYaw() const { return mbHasExtYaw; }
+    double GetExternalYawSlam() const { return mExtYawSlam; }
+    double GetExternalYawSigmaRad() const { return mExtYawSigmaRad; }
+    bool GetHasExternalAlt() const { return mbHasExtAlt; }
+    double GetExternalAltSlam() const { return mExtAltSlam; }
+    double GetExternalAltSigmaM() const { return mExtAltSigmaM; }
 
     Sophus::SE3f GetPose();
 
@@ -438,6 +457,14 @@ protected:
     // Velocity (Only used for inertial SLAM)
     Eigen::Vector3f mVw;
     bool mbHasVelocity;
+
+    // External absolute reference anchoring (compass yaw + baro alt)
+    bool mbHasExtYaw;
+    double mExtYawSlam;       // target camera world yaw (rad, SLAM frame)
+    double mExtYawSigmaRad;   // prior sigma (rad)
+    bool mbHasExtAlt;
+    double mExtAltSlam;       // target camera world z (m, SLAM frame)
+    double mExtAltSigmaM;     // prior sigma (m)
 
     //Transformation matrix between cameras in stereo fisheye
     Sophus::SE3<float> mTlr;
