@@ -873,6 +873,39 @@ public:
     virtual void linearizeOplus();
 };
 
+// Inertial-graph variants of the anchoring priors above. The inertial BAs
+// (LocalInertialBA / FullInertialBA) optimize VertexPose (ImuCamPose) vertices
+// instead of SE3Expmap, so these bind the same measurements to VertexPose.
+// Measurement frames match LatchExternalRef: yaw = camera Z-yaw in the SLAM
+// world, alt = camera center world Z.
+class EdgeExtMagYawVP : public g2o::BaseUnaryEdge<1,double,VertexPose>
+{
+public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+    EdgeExtMagYawVP(){}
+
+    virtual bool read(std::istream& is){return false;}
+    virtual bool write(std::ostream& os) const{return false;}
+
+    void computeError();
+    virtual void linearizeOplus();
+};
+
+class EdgeExtBaroAltVP : public g2o::BaseUnaryEdge<1,double,VertexPose>
+{
+public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+    EdgeExtBaroAltVP(){}
+
+    virtual bool read(std::istream& is){return false;}
+    virtual bool write(std::ostream& os) const{return false;}
+
+    void computeError();
+    virtual void linearizeOplus();
+};
+
 
 class Edge4DoF : public g2o::BaseBinaryEdge<6,Vector6d,VertexPose4DoF,VertexPose4DoF>
 {

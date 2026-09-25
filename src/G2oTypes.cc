@@ -868,14 +868,17 @@ void EdgeExtMagYaw::linearizeOplus()
 void EdgeExtBaroAlt::computeError()
 {
     const g2o::VertexSE3Expmap* v = static_cast<const g2o::VertexSE3Expmap*>(_vertices[0]);
-    _error[0] = v->estimate().translation().z() - _measurement;
+    const g2o::SE3Quat &E = v->estimate();
+    const Eigen::Matrix3d Rcw = E.rotation().toRotationMatrix();
+    const Eigen::Vector3d tcw = E.translation();
+    _error[0] = (-(Rcw.transpose() * tcw))(2) - _measurement;
 }
 
 void EdgeExtBaroAlt::linearizeOplus()
 {
     const g2o::VertexSE3Expmap* v = static_cast<const g2o::VertexSE3Expmap*>(_vertices[0]);
     const g2o::SE3Quat base = v->estimate();
-    const double err0 = base.translation().z() - _measurement;
+    const double err0 = _error[0];
     const double eps = 1e-7;
     for(int i = 0; i < 6; i++)
     {
@@ -884,7 +887,63 @@ void EdgeExtBaroAlt::linearizeOplus()
         g2o::VertexSE3Expmap tmp;
         tmp.setEstimate(base);
         tmp.oplusImpl(upd);
-        const double err1 = tmp.estimate().translation().z() - _measurement;
+        const g2o::SE3Quat &E = tmp.estimate();
+        const Eigen::Matrix3d Rcw = E.rotation().toRotationMatrix();
+        const Eigen::Vector3d tcw = E.translation();
+        const double err1 = (-(Rcw.transpose() * tcw))(2) - _measurement;
+        _jacobianOplusXi(0,i) = (err1 - err0) / eps;
+    }
+}
+
+void EdgeExtMagYawVP::computeError()
+{
+    const VertexPose* v = static_cast<const VertexPose*>(_vertices[0]);
+    const Eigen::Matrix3d Rcw = v->estimate().Rcw[0];
+    _error[0] = ExtWrapToPi(atan2(Rcw(0,1), Rcw(0,0)) - _measurement);
+}
+
+void EdgeExtMagYawVP::linearizeOplus()
+{
+    const VertexPose* v = static_cast<const VertexPose*>(_vertices[0]);
+    const ImuCamPose base = v->estimate();
+    const double err0 = _error[0];
+    const double eps = 1e-7;
+    for(int i = 0; i < 6; i++)
+    {
+        double upd[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        upd[i] = eps;
+        VertexPose tmp;
+        tmp.setEstimate(base);
+        tmp.oplusImpl(upd);
+        const Eigen::Matrix3d Rcw1 = tmp.estimate().Rcw[0];
+        const double err1 = ExtWrapToPi(atan2(Rcw1(0,1), Rcw1(0,0)) - _measurement);
+        _jacobianOplusXi(0,i) = (err1 - err0) / eps;
+    }
+}
+
+void EdgeExtBaroAltVP::computeError()
+{
+    const VertexPose* v = static_cast<const VertexPose*>(_vertices[0]);
+    const ImuCamPose &icp = v->estimate();
+    _error[0] = (-(icp.Rcw[0].transpose() * icp.tcw[0]))(2) - _measurement;
+}
+
+void EdgeExtBaroAltVP::linearizeOplus()
+{
+    const VertexPose* v = static_cast<const VertexPose*>(_vertices[0]);
+    const ImuCamPose base = v->estimate();
+    const double err0 = _error[0];
+    const double eps = 1e-7;
+    for(int i = 0; i < 6; i++)
+    {
+        double upd[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        upd[i] = eps;
+        VertexPose tmp;
+        tmp.setEstimate(base);
+        tmp.oplusImpl(upd);
+        const Eigen::Vector3d tcw1 = tmp.estimate().tcw[0];
+        const Eigen::Matrix3d Rcw1 = tmp.estimate().Rcw[0];
+        const double err1 = (-(Rcw1.transpose() * tcw1))(2) - _measurement;
         _jacobianOplusXi(0,i) = (err1 - err0) / eps;
     }
 }

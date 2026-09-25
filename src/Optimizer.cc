@@ -2958,6 +2958,57 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
         assert(mit->second>=3);
     }
 
+    // External absolute reference anchoring (compass yaw + barometric altitude)
+    // on the inertial-graph pose vertices. The LBA-only edges above never run on
+    // the post-IMU-init path (LocalInertialBA is used instead), so these
+    // VertexPose-bound priors pull every optimizable temporal keyframe toward
+    // the latched absolute yaw/alt targets. Only active on keyframes carrying a
+    // latched external measurement; vanilla runs (feature disabled) add zero edges.
+    {
+        int nExtEdges = 0;
+        for(vector<KeyFrame*>::iterator vit=vpOptimizableKFs.begin(), vend=vpOptimizableKFs.end(); vit!=vend; vit++)
+        {
+            KeyFrame* pKFi = *vit;
+            if(pKFi->mnId == pMap->GetInitKFid())
+                continue;
+
+            VertexPose* vPose = static_cast<VertexPose*>(optimizer.vertex(pKFi->mnId));
+            if(!vPose)
+                continue;
+
+            if(pKFi->GetHasExternalYaw())
+            {
+                EdgeExtMagYawVP* eYaw = new EdgeExtMagYawVP();
+                eYaw->setVertex(0, vPose);
+                eYaw->setMeasurement(pKFi->GetExternalYawSlam());
+                const double varYaw = pKFi->GetExternalYawSigmaRad() * pKFi->GetExternalYawSigmaRad();
+                eYaw->setInformation(Eigen::Matrix<double,1,1>::Identity() / varYaw);
+                g2o::RobustKernelHuber* rkYaw = new g2o::RobustKernelHuber();
+                rkYaw->setDelta(2.0);
+                eYaw->setRobustKernel(rkYaw);
+                optimizer.addEdge(eYaw);
+                nExtEdges++;
+            }
+
+            if(pKFi->GetHasExternalAlt())
+            {
+                EdgeExtBaroAltVP* eAlt = new EdgeExtBaroAltVP();
+                eAlt->setVertex(0, vPose);
+                eAlt->setMeasurement(pKFi->GetExternalAltSlam());
+                const double varAlt = pKFi->GetExternalAltSigmaM() * pKFi->GetExternalAltSigmaM();
+                eAlt->setInformation(Eigen::Matrix<double,1,1>::Identity() / varAlt);
+                g2o::RobustKernelHuber* rkAlt = new g2o::RobustKernelHuber();
+                rkAlt->setDelta(2.0);
+                eAlt->setRobustKernel(rkAlt);
+                optimizer.addEdge(eAlt);
+                nExtEdges++;
+            }
+        }
+        if(nExtEdges > 0)
+            FT_CALC_LOG("optimizer.local_inertial_ba.ext_edges added=%d optimizable_kfs=%u",
+                        nExtEdges, static_cast<unsigned>(vpOptimizableKFs.size()));
+    }
+
     optimizer.initializeOptimization();
     optimizer.computeActiveErrors();
     float err = optimizer.activeRobustChi2();
