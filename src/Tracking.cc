@@ -2270,6 +2270,11 @@ void Tracking::Track()
 
     // Get Map Mutex -> Map cannot be changed
     unique_lock<mutex> lock(pCurrentMap->mMutexMapUpdate);
+    // RESEARCH frame-epoch contract: ApplyScaledRotation needs this mutex, so the epoch cannot
+    // change while this frame is tracked.
+    mnPoseMapId = pCurrentMap->GetId();
+    mnPoseFrameEpoch = pCurrentMap->GetFrameEpoch();
+    mbPoseEpochRecorded = true;
 
     mbMapUpdated = false;
 
@@ -4636,10 +4641,12 @@ void Tracking::UpdateFrameIMU(const float s, const IMU::Bias &b, KeyFrame* pCurr
 
         KeyFrame* pKF = *lRit;
 
-        while(pKF->isBad())
-        {
-            pKF = pKF->GetParent();
-        }
+        // RESEARCH culling-v4b-r2 (release rev2): a culled reference may legitimately have no live
+        // parent; the old parent walk dereferenced NULL here (rev1 crash, VIBA2 UpdateFrameIMU).
+        // Resolve exactly as System::SaveTrajectory* does and leave unresolvable entries unscaled.
+        Sophus::SE3f TReferenceToRoot;
+        if(!pKF || !pKF->ResolveTrajectoryReference(pKF, TReferenceToRoot))
+            continue;
 
         if(pKF->GetMap() == pMap)
         {

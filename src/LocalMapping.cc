@@ -1048,27 +1048,25 @@ void LocalMapping::KeyFrameCulling()
 
                     if((bInitImu && (pKF->mnId<last_ID) && t<3.) || (t<0.5))
                     {
-                        pKF->mNextKF->mpImuPreintegrated->MergePrevious(pKF->mpImuPreintegrated);
-                        pKF->mNextKF->mPrevKF = pKF->mPrevKF;
-                        pKF->mPrevKF->mNextKF = pKF->mNextKF;
-                        pKF->mNextKF = NULL;
-                        pKF->mPrevKF = NULL;
-                        pKF->SetBadFlag();
+                        KeyFrame* pPrevKF = pKF->mPrevKF;
+                        if(!pKF->SetBadFlag(pPrevKF, true))
+                            FT_CALC_LOG("research.cull.retained kf=%llu reason=tree_repair_unavailable",
+                                        static_cast<unsigned long long>(pKF->mnId));
                     }
                     else if(!mpCurrentKeyFrame->GetMap()->GetIniertialBA2() && ((pKF->GetImuPosition()-pKF->mPrevKF->GetImuPosition()).norm()<0.02) && (t<3))
                     {
-                        pKF->mNextKF->mpImuPreintegrated->MergePrevious(pKF->mpImuPreintegrated);
-                        pKF->mNextKF->mPrevKF = pKF->mPrevKF;
-                        pKF->mPrevKF->mNextKF = pKF->mNextKF;
-                        pKF->mNextKF = NULL;
-                        pKF->mPrevKF = NULL;
-                        pKF->SetBadFlag();
+                        KeyFrame* pPrevKF = pKF->mPrevKF;
+                        if(!pKF->SetBadFlag(pPrevKF, true))
+                            FT_CALC_LOG("research.cull.retained kf=%llu reason=tree_repair_unavailable",
+                                        static_cast<unsigned long long>(pKF->mnId));
                     }
                 }
             }
             else
             {
-                pKF->SetBadFlag();
+                if(!pKF->SetBadFlag(pKF->mPrevKF))
+                    FT_CALC_LOG("research.cull.retained kf=%llu reason=tree_repair_unavailable",
+                                static_cast<unsigned long long>(pKF->mnId));
             }
         }
         if((count > 20 && mbAbortBA) || count>100)
@@ -1341,7 +1339,8 @@ void LocalMapping::InitializeIMU(float priorG, float priorA, bool bFIBA)
     Verbose::PrintMess("Global Bundle Adjustment finished\nUpdating map ...", Verbose::VERBOSITY_NORMAL);
 
     // Get Map Mutex
-    unique_lock<mutex> lock(mpAtlas->GetCurrentMap()->mMutexMapUpdate);
+    Map* pUpdateLockedMap = mpAtlas->GetCurrentMap();
+    unique_lock<mutex> lock(pUpdateLockedMap->mMutexMapUpdate);
 
     unsigned long GBAid = mpCurrentKeyFrame->mnId;
 
@@ -1439,12 +1438,25 @@ void LocalMapping::InitializeIMU(float priorG, float priorA, bool bFIBA)
     mnKFs=vpKF.size();
     mIdxInit++;
 
-    for(list<KeyFrame*>::iterator lit = mlNewKeyFrames.begin(), lend=mlNewKeyFrames.end(); lit!=lend; lit++)
+    // RESEARCH culling-v4b-r1: this thread holds pUpdateLockedMap->mMutexMapUpdate, which
+    // SetBadFlag would otherwise lock again. The queue is drained above under that lock, so it is
+    // normally empty here; count it so a non-empty case is visible.
+    list<KeyFrame*> lPendingKFs;
     {
-        (*lit)->SetBadFlag();
-        delete *lit;
+        unique_lock<mutex> lockNewKFs(mMutexNewKFs);
+        lPendingKFs.swap(mlNewKeyFrames);
     }
-    mlNewKeyFrames.clear();
+    if(!lPendingKFs.empty())
+        FT_CALC_LOG("research.kf.pending_after_drain n=%llu", static_cast<unsigned long long>(lPendingKFs.size()));
+    for(list<KeyFrame*>::iterator lit = lPendingKFs.begin(), lend=lPendingKFs.end(); lit!=lend; lit++)
+    {
+        KeyFrame* pPendingKF = *lit;
+        if(pPendingKF->SetBadFlagMapUpdateHeld(pUpdateLockedMap))
+            delete pPendingKF;
+        else
+            FT_CALC_LOG("research.kf.pending_delete_refused id=%llu action=retain_in_map",
+                        static_cast<unsigned long long>(pPendingKF->mnId));
+    }
 
     mpTracker->mState=Tracking::OK;
     bInitializing = false;
@@ -1501,7 +1513,8 @@ void LocalMapping::ScaleRefinement()
     
     Sophus::SO3d so3wg(mRwg);
     // Before this line we are not changing the map
-    unique_lock<mutex> lock(mpAtlas->GetCurrentMap()->mMutexMapUpdate);
+    Map* pUpdateLockedMap = mpAtlas->GetCurrentMap();
+    unique_lock<mutex> lock(pUpdateLockedMap->mMutexMapUpdate);
     std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
     if ((fabs(mScale-1.f)>0.002)||!mbMonocular)
     {
@@ -1511,12 +1524,25 @@ void LocalMapping::ScaleRefinement()
     }
     std::chrono::steady_clock::time_point t3 = std::chrono::steady_clock::now();
 
-    for(list<KeyFrame*>::iterator lit = mlNewKeyFrames.begin(), lend=mlNewKeyFrames.end(); lit!=lend; lit++)
+    // RESEARCH culling-v4b-r1: this thread holds pUpdateLockedMap->mMutexMapUpdate, which
+    // SetBadFlag would otherwise lock again. The queue is drained above under that lock, so it is
+    // normally empty here; count it so a non-empty case is visible.
+    list<KeyFrame*> lPendingKFs;
     {
-        (*lit)->SetBadFlag();
-        delete *lit;
+        unique_lock<mutex> lockNewKFs(mMutexNewKFs);
+        lPendingKFs.swap(mlNewKeyFrames);
     }
-    mlNewKeyFrames.clear();
+    if(!lPendingKFs.empty())
+        FT_CALC_LOG("research.kf.pending_after_drain n=%llu", static_cast<unsigned long long>(lPendingKFs.size()));
+    for(list<KeyFrame*>::iterator lit = lPendingKFs.begin(), lend=lPendingKFs.end(); lit!=lend; lit++)
+    {
+        KeyFrame* pPendingKF = *lit;
+        if(pPendingKF->SetBadFlagMapUpdateHeld(pUpdateLockedMap))
+            delete pPendingKF;
+        else
+            FT_CALC_LOG("research.kf.pending_delete_refused id=%llu action=retain_in_map",
+                        static_cast<unsigned long long>(pPendingKF->mnId));
+    }
 
     double t_inertial_only = std::chrono::duration_cast<std::chrono::duration<double> >(t1 - t0).count();
 

@@ -166,6 +166,12 @@ public:
     int mTrackedFr;
     bool mbStep;
 
+    // RESEARCH frame-epoch contract: map id and frame epoch under which the most recent Track()
+    // computed its pose (recorded while holding that map's mMutexMapUpdate).
+    unsigned long mnPoseMapId = 0;
+    unsigned long mnPoseFrameEpoch = 0;
+    bool mbPoseEpochRecorded = false;
+
     // True if local mapping is deactivated and we are performing only localization
     bool mbOnlyTracking;
 

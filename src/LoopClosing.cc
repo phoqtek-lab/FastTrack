@@ -1584,20 +1584,26 @@ void LoopClosing::MergeLocal()
     }
 
     //Rebuild the essential graph in the local window
-    pCurrentMap->GetOriginKF()->SetFirstConnection(false);
-    pNewChild = mpCurrentKF->GetParent(); // Old parent, it will be the new child of this KF
-    pNewParent = mpCurrentKF; // Old child, now it will be the parent of its own parent(we need eliminate this KF from children list in its old parent)
-    mpCurrentKF->ChangeParent(mpMergeMatchedKF);
-    while(pNewChild)
     {
-        pNewChild->EraseChild(pNewParent); // We remove the relation between the old parent and the new for avoid loop
-        KeyFrame * pOldParent = pNewChild->GetParent();
-
-        pNewChild->ChangeParent(pNewParent);
-
-        pNewParent = pNewChild;
-        pNewChild = pOldParent;
-
+        unique_lock<mutex> currentLock(pCurrentMap->mMutexMapUpdate);
+        unique_lock<mutex> mergeLock(pMergeMap->mMutexMapUpdate);
+        pCurrentMap->GetOriginKF()->SetFirstConnection(false);
+        pNewChild = mpCurrentKF->GetParent(); // Old parent becomes a child along the reversed path.
+        pNewParent = mpCurrentKF;
+        if(!mpCurrentKF->ChangeParentForMerge(mpMergeMatchedKF))
+            FT_CALC_LOG("research.merge.parent_rewire_failed child=%llu parent=%llu",
+                        static_cast<unsigned long long>(mpCurrentKF->mnId),
+                        static_cast<unsigned long long>(mpMergeMatchedKF->mnId));
+        while(pNewChild)
+        {
+            KeyFrame* pOldParent = pNewChild->GetParent();
+            if(!pNewChild->ChangeParentForMerge(pNewParent))
+                FT_CALC_LOG("research.merge.parent_rewire_failed child=%llu parent=%llu",
+                            static_cast<unsigned long long>(pNewChild->mnId),
+                            static_cast<unsigned long long>(pNewParent->mnId));
+            pNewParent = pNewChild;
+            pNewChild = pOldParent;
+        }
     }
 
     //Update the connections between the local window
@@ -1958,18 +1964,25 @@ void LoopClosing::MergeLocal2()
 
     //cout << "Update essential graph" << endl;
     // mpCurrentKF->UpdateConnections(); // to put at false mbFirstConnection
-    pMergeMap->GetOriginKF()->SetFirstConnection(false);
-    pNewChild = mpMergeMatchedKF->GetParent(); // Old parent, it will be the new child of this KF
-    pNewParent = mpMergeMatchedKF; // Old child, now it will be the parent of its own parent(we need eliminate this KF from children list in its old parent)
-    mpMergeMatchedKF->ChangeParent(mpCurrentKF);
-    while(pNewChild)
     {
-        pNewChild->EraseChild(pNewParent); // We remove the relation between the old parent and the new for avoid loop
-        KeyFrame * pOldParent = pNewChild->GetParent();
-        pNewChild->ChangeParent(pNewParent);
-        pNewParent = pNewChild;
-        pNewChild = pOldParent;
-
+        unique_lock<mutex> currentLock(pCurrentMap->mMutexMapUpdate);
+        pMergeMap->GetOriginKF()->SetFirstConnection(false);
+        pNewChild = mpMergeMatchedKF->GetParent(); // Old parent becomes a child along the reversed path.
+        pNewParent = mpMergeMatchedKF;
+        if(!mpMergeMatchedKF->ChangeParentForMerge(mpCurrentKF))
+            FT_CALC_LOG("research.merge.parent_rewire_failed child=%llu parent=%llu",
+                        static_cast<unsigned long long>(mpMergeMatchedKF->mnId),
+                        static_cast<unsigned long long>(mpCurrentKF->mnId));
+        while(pNewChild)
+        {
+            KeyFrame* pOldParent = pNewChild->GetParent();
+            if(!pNewChild->ChangeParentForMerge(pNewParent))
+                FT_CALC_LOG("research.merge.parent_rewire_failed child=%llu parent=%llu",
+                            static_cast<unsigned long long>(pNewChild->mnId),
+                            static_cast<unsigned long long>(pNewParent->mnId));
+            pNewParent = pNewChild;
+            pNewChild = pOldParent;
+        }
     }
 
 

@@ -1,3 +1,8 @@
+#include <cstdio>
+#include <mutex>
+#include <set>
+namespace ORB_SLAM3 {
+}
 /**
 * This file is part of ORB-SLAM3
 *
@@ -24,6 +29,56 @@
 
 namespace ORB_SLAM3
 {
+
+bool TreeParentAllowed(KeyFrame* pChild, KeyFrame* pParent, bool bAllowMergeTransition)
+{
+    if(!pChild || !pParent || pChild == pParent || pChild->isBad() || pParent->isBad())
+        return false;
+
+    Map* pChildMap = pChild->GetMap();
+    Map* pParentMap = pParent->GetMap();
+    if(!pChildMap || !pParentMap || (!bAllowMergeTransition && pChildMap != pParentMap))
+        return false;
+    if(!bAllowMergeTransition && pChild->mnId == pChildMap->GetInitKFid())
+        return false; // The map's original root is only demoted by map merge.
+
+    std::set<KeyFrame*> visited;
+    KeyFrame* pWalk = pParent;
+    while(pWalk)
+    {
+        if(pWalk == pChild || !visited.insert(pWalk).second || pWalk->isBad())
+            return false;
+        if(!bAllowMergeTransition && pWalk->GetMap() != pChildMap)
+            return false;
+        pWalk = pWalk->mpParent; // Caller holds KeyFrame::SpanningTreeMutex().
+    }
+
+    KeyFrame* pRoot = pParent;
+    while(pRoot->mpParent)
+        pRoot = pRoot->mpParent;
+    Map* pRootMap = pRoot->GetMap();
+    if(!pRootMap || pRoot->mnId != pRootMap->GetInitKFid())
+        return false;
+    return bAllowMergeTransition || pRootMap == pChildMap;
+}
+
+bool ChangeParentUnderTreeLock(KeyFrame* pChild, KeyFrame* pParent, bool bAllowMergeTransition)
+{
+    if(!TreeParentAllowed(pChild, pParent, bAllowMergeTransition))
+        return false;
+
+    if(pChild->mpParent == pParent)
+    {
+        pParent->mspChildrens.insert(pChild);
+        return true;
+    }
+
+    if(pChild->mpParent)
+        pChild->mpParent->mspChildrens.erase(pChild);
+    pChild->mpParent = pParent;
+    pParent->mspChildrens.insert(pChild);
+    return true;
+}
 
 long unsigned int KeyFrame::nNextId=0;
 
@@ -426,7 +481,27 @@ void KeyFrame::UpdateConnections(bool upParent)
 
     // This should not happen
     if(KFcounter.empty())
+    {
+        Map* pMap = GetMap();
+        bool parentAssigned = false;
+        if(pMap && mnId != pMap->GetInitKFid())
+        {
+            std::lock_guard<std::mutex> treeLock(SpanningTreeMutex());
+            if(mbFirstConnection && mPrevKF)
+            {
+                parentAssigned = ChangeParentUnderTreeLock(this, mPrevKF, false);
+                if(parentAssigned)
+                    mbFirstConnection = false;
+            }
+        }
+        if(pMap && mnId!=pMap->GetInitKFid() && !parentAssigned)
+        {
+            int nMP = 0; for(MapPoint* pMP : vpMP) if(pMP && !pMP->isBad()) nMP++;
+            FT_CALC_LOG("research.kf.parentless reason=no_covisibility_no_valid_temporal_parent kf=%lu map=%lu valid_mps=%d t=%f",
+                        mnId, pMap->GetId(), nMP, mTimeStamp);
+        }
         return;
+    }
 
     //If the counter is greater than threshold add connection
     //In case no keyframe counter is over threshold add the one with maximum counter
@@ -468,6 +543,8 @@ void KeyFrame::UpdateConnections(bool upParent)
         lWs.push_front(vPairs[i].first);
     }
 
+    std::vector<KeyFrame*> parentCandidates;
+    bool shouldAssignParent = false;
     {
         unique_lock<mutex> lockCon(mMutexConnections);
 
@@ -476,64 +553,187 @@ void KeyFrame::UpdateConnections(bool upParent)
         mvOrderedWeights = vector<int>(lWs.begin(), lWs.end());
 
 
-        if(mbFirstConnection && mnId!=mpMap->GetInitKFid())
-        {
-            mpParent = mvpOrderedConnectedKeyFrames.front();
-            mpParent->AddChild(this);
-            mbFirstConnection = false;
-        }
+        parentCandidates = mvpOrderedConnectedKeyFrames;
+    }
 
+    Map* pMap = GetMap();
+    if(pMap)
+    {
+        std::lock_guard<std::mutex> treeLock(SpanningTreeMutex());
+        shouldAssignParent = mbFirstConnection && mnId != pMap->GetInitKFid();
+        if(shouldAssignParent)
+        {
+            KeyFrame* pAssignedParent = NULL;
+            bool usedTemporalFallback = false;
+            for(KeyFrame* pCandidate : parentCandidates)
+            {
+                if(ChangeParentUnderTreeLock(this, pCandidate, false))
+                {
+                    pAssignedParent = pCandidate;
+                    break;
+                }
+            }
+            if(!pAssignedParent && mPrevKF && ChangeParentUnderTreeLock(this, mPrevKF, false))
+            {
+                pAssignedParent = mPrevKF;
+                usedTemporalFallback = true;
+            }
+
+            if(pAssignedParent)
+            {
+                mbFirstConnection = false;
+                FT_CALC_LOG("research.kf.parent_assigned id=%llu parent=%llu temporal_fallback=%d",
+                            static_cast<unsigned long long>(mnId),
+                            static_cast<unsigned long long>(pAssignedParent->mnId),
+                            usedTemporalFallback ? 1 : 0);
+            }
+            else
+            {
+                FT_CALC_LOG("research.kf.parent_rejected id=%llu candidates=%llu reason=no_rooted_acyclic_parent",
+                            static_cast<unsigned long long>(mnId),
+                            static_cast<unsigned long long>(parentCandidates.size()));
+            }
+        }
     }
 }
 
 void KeyFrame::AddChild(KeyFrame *pKF)
 {
-    unique_lock<mutex> lockCon(mMutexConnections);
-    mspChildrens.insert(pKF);
+    if(pKF)
+        pKF->ChangeParent(this);
 }
 
 void KeyFrame::EraseChild(KeyFrame *pKF)
 {
-    unique_lock<mutex> lockCon(mMutexConnections);
+    if(!pKF)
+        return;
+    std::lock_guard<std::mutex> treeLock(SpanningTreeMutex());
     mspChildrens.erase(pKF);
+    if(pKF->mpParent == this)
+        pKF->mpParent = NULL;
 }
 
-void KeyFrame::ChangeParent(KeyFrame *pKF)
+bool KeyFrame::ChangeParent(KeyFrame *pKF)
 {
-    unique_lock<mutex> lockCon(mMutexConnections);
-    if(pKF == this)
-    {
-        FT_CALC_LOG("keyframe.parent_change.abort id=%llu reason=self_parent",
-                    static_cast<unsigned long long>(mnId));
-        throw std::invalid_argument("The parent and child can not be the same");
-    }
+    std::lock_guard<std::mutex> treeLock(SpanningTreeMutex());
+    const bool ok = ChangeParentUnderTreeLock(this, pKF, false);
+    FT_CALC_LOG("keyframe.parent_change id=%llu parent=%llu accepted=%d mode=normal",
+                static_cast<unsigned long long>(mnId),
+                static_cast<unsigned long long>(pKF ? pKF->mnId : 0UL), ok ? 1 : 0);
+    return ok;
+}
 
-    mpParent = pKF;
-    pKF->AddChild(this);
+bool KeyFrame::ChangeParentForMerge(KeyFrame *pKF)
+{
+    std::lock_guard<std::mutex> treeLock(SpanningTreeMutex());
+    const bool ok = ChangeParentUnderTreeLock(this, pKF, true);
+    FT_CALC_LOG("keyframe.parent_change id=%llu parent=%llu accepted=%d mode=merge",
+                static_cast<unsigned long long>(mnId),
+                static_cast<unsigned long long>(pKF ? pKF->mnId : 0UL), ok ? 1 : 0);
+    return ok;
 }
 
 set<KeyFrame*> KeyFrame::GetChilds()
 {
-    unique_lock<mutex> lockCon(mMutexConnections);
+    std::lock_guard<std::mutex> treeLock(SpanningTreeMutex());
     return mspChildrens;
 }
 
 KeyFrame* KeyFrame::GetParent()
 {
-    unique_lock<mutex> lockCon(mMutexConnections);
-    return mpParent;
+    std::lock_guard<std::mutex> treeLock(SpanningTreeMutex());
+    // mpParent remains as a historical reconstruction link after culling;
+    // it is not an active spanning-tree edge for bad keyframes.
+    return mbBad ? NULL : mpParent;
+}
+
+bool KeyFrame::ResolveTrajectoryReference(KeyFrame*& pRoot, Sophus::SE3f& TReferenceToRoot)
+{
+    std::lock_guard<std::mutex> treeLock(SpanningTreeMutex());
+    std::set<KeyFrame*> visited;
+    KeyFrame* pWalk = this;
+    TReferenceToRoot = Sophus::SE3f();
+
+    while(pWalk && pWalk->mbBad)
+    {
+        if(!visited.insert(pWalk).second)
+            return false;
+
+        Map* pWalkMap = pWalk->GetMap();
+        KeyFrame* pParent = pWalk->mpParent;
+        if(!pWalkMap || !pParent || pParent->GetMap() != pWalkMap)
+            return false;
+
+        TReferenceToRoot = TReferenceToRoot * pWalk->mTcp;
+        pWalk = pParent;
+    }
+
+    // A reset detaches live keyframes from the cleared map. Do not combine an
+    // old reference pose with a newly initialized map's origin. A live terminal
+    // is valid only when it is the declared root used by TreeParentAllowed;
+    // a disconnected non-root must not be serialized as an additional root.
+    Map* pRootMap = pWalk ? pWalk->GetMap() : NULL;
+    if(!pRootMap)
+        return false;
+
+    // A frame may legitimately reference any live keyframe on the map's
+    // rooted tree, not only the declared root. Validate that active ancestry
+    // reaches the declared root before exposing the live terminal. This still
+    // rejects disconnected parentless components and malformed merge/reset
+    // links without dropping ordinary non-root trajectory references.
+    std::set<KeyFrame*> activeAncestors;
+    KeyFrame* pActive = pWalk;
+    while(pActive)
+    {
+        if(!activeAncestors.insert(pActive).second || pActive->mbBad || pActive->GetMap() != pRootMap)
+            return false;
+        if(pActive->mnId == pRootMap->GetInitKFid())
+        {
+            if(pActive->mpParent)
+                return false;
+            pRoot = pWalk;
+            return true;
+        }
+
+        KeyFrame* pParent = pActive->mpParent;
+        if(!pParent || pParent->mbBad || pParent->GetMap() != pRootMap ||
+           pParent->mspChildrens.count(pActive) == 0)
+            return false;
+        pActive = pParent;
+    }
+    return false;
 }
 
 bool KeyFrame::hasChild(KeyFrame *pKF)
 {
-    unique_lock<mutex> lockCon(mMutexConnections);
+    std::lock_guard<std::mutex> treeLock(SpanningTreeMutex());
     return mspChildrens.count(pKF);
 }
 
 void KeyFrame::SetFirstConnection(bool bFirst)
 {
-    unique_lock<mutex> lockCon(mMutexConnections);
+    std::lock_guard<std::mutex> treeLock(SpanningTreeMutex());
     mbFirstConnection=bFirst;
+}
+
+std::mutex& KeyFrame::SpanningTreeMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
+void KeyFrame::DetachTreeRelations()
+{
+    std::lock_guard<std::mutex> treeLock(SpanningTreeMutex());
+    if(mpParent)
+        mpParent->mspChildrens.erase(this);
+    mpParent = NULL;
+    for(KeyFrame* pChild : mspChildrens)
+    {
+        if(pChild && pChild->mpParent == this)
+            pChild->mpParent = NULL;
+    }
+    mspChildrens.clear();
 }
 
 void KeyFrame::AddLoopEdge(KeyFrame *pKF)
@@ -584,113 +784,148 @@ void KeyFrame::SetErase()
     }
 }
 
-void KeyFrame::SetBadFlag()
+bool KeyFrame::SetBadFlag(KeyFrame* pFallbackParent, bool bMergeInertialLinks)
+{
+    return SetBadFlagImpl(pFallbackParent, bMergeInertialLinks, NULL);
+}
+
+bool KeyFrame::SetBadFlagMapUpdateHeld(Map* pHeldMap)
+{
+    return SetBadFlagImpl(NULL, false, pHeldMap);
+}
+
+bool KeyFrame::SetBadFlagImpl(KeyFrame* pFallbackParent, bool bMergeInertialLinks, Map* pHeldMap)
 {
     FT_CALC_SCOPE();
+    Map* pMap = NULL;
+    std::vector<KeyFrame*> vConnections;
+    std::vector<MapPoint*> vMapPoints;
+
+    pMap = GetMap();
+    if(!pMap)
+        return false;
+    // Match the map-update -> spanning-tree lock order used by optimization,
+    // merge membership migration, map clear and save snapshots.
+    std::unique_lock<std::mutex> mapUpdateLock(pMap->mMutexMapUpdate, std::defer_lock);
+    if(pMap != pHeldMap)
+        mapUpdateLock.lock();
+    // One tree lock covers validation, child reparenting and reciprocal edge
+    // updates. Readers use the same lock through GetParent/GetChilds/hasChild.
+    std::unique_lock<std::mutex> treeLock(SpanningTreeMutex());
+    if(GetMap() != pMap)
+        return false;
     {
         unique_lock<mutex> lock(mMutexConnections);
-        if(mnId==mpMap->GetInitKFid())
-        {
-            return;
-        }
-        else if(mbNotErase)
+        if(mbBad || mnId == pMap->GetInitKFid())
+            return false;
+        if(mbNotErase)
         {
             mbToBeErased = true;
-            return;
+            return false;
         }
+        for(map<KeyFrame*,int>::const_iterator it=mConnectedKeyFrameWeights.begin(); it!=mConnectedKeyFrameWeights.end(); ++it)
+            vConnections.push_back(it->first);
+    }
+    {
+        unique_lock<mutex> lock(mMutexFeatures);
+        vMapPoints = mvpMapPoints;
     }
 
-    for(map<KeyFrame*,int>::iterator mit = mConnectedKeyFrameWeights.begin(), mend=mConnectedKeyFrameWeights.end(); mit!=mend; mit++)
-    {
-        mit->first->EraseConnection(this);
-    }
+    if(bMergeInertialLinks && (!mPrevKF || !mNextKF || !mpImuPreintegrated || !mNextKF->mpImuPreintegrated))
+        return false;
 
-    for(size_t i=0; i<mvpMapPoints.size(); i++)
+    KeyFrame* pReplacementParent = mpParent ? mpParent : pFallbackParent;
+    const bool usedParentlessFallback = !mpParent && pFallbackParent && !mspChildrens.empty();
+    if(!mspChildrens.empty())
     {
-        if(mvpMapPoints[i])
+        if(!pReplacementParent || !TreeParentAllowed(this, pReplacementParent, false))
         {
-            mvpMapPoints[i]->EraseObservation(this);
+            FT_CALC_LOG("research.cull.refused kf=%llu children=%llu reason=no_same_map_rooted_parent",
+                        static_cast<unsigned long long>(mnId),
+                        static_cast<unsigned long long>(mspChildrens.size()));
+            return false;
+        }
+        for(KeyFrame* pChild : mspChildrens)
+        {
+            if(pChild && !pChild->isBad() && !TreeParentAllowed(pChild, pReplacementParent, false))
+            {
+                FT_CALC_LOG("research.cull.refused kf=%llu child=%llu reason=unsafe_reparent",
+                            static_cast<unsigned long long>(mnId),
+                            static_cast<unsigned long long>(pChild->mnId));
+                return false;
+            }
         }
     }
 
+    // The existing parent (or the caller's temporal predecessor when the
+    // target was parentless) is the explicit structural fallback. We never
+    // create an additional map root to hide a disconnected component.
+    if(!mspChildrens.empty())
+    {
+        if(usedParentlessFallback)
+            FT_CALC_LOG("research.cull.parentless_fallback.begin kf=%llu parent=%llu children=%llu",
+                        static_cast<unsigned long long>(mnId),
+                        static_cast<unsigned long long>(pReplacementParent->mnId),
+                        static_cast<unsigned long long>(mspChildrens.size()));
+        std::vector<KeyFrame*> vChildren(mspChildrens.begin(), mspChildrens.end());
+        for(KeyFrame* pChild : vChildren)
+        {
+            if(pChild && !pChild->isBad() && !ChangeParentUnderTreeLock(pChild, pReplacementParent, false))
+                return false; // Prevalidation makes this unreachable without concurrent lifetime corruption.
+        }
+        for(KeyFrame* pChild : vChildren)
+            if(pChild && pChild->mpParent == this)
+                pChild->mpParent = NULL;
+    }
+
+    if(bMergeInertialLinks)
+    {
+        KeyFrame* pPrevKF = mPrevKF;
+        KeyFrame* pNextKF = mNextKF;
+        pNextKF->mpImuPreintegrated->MergePrevious(mpImuPreintegrated);
+        pNextKF->mPrevKF = pPrevKF;
+        pPrevKF->mNextKF = pNextKF;
+        mNextKF = NULL;
+        mPrevKF = NULL;
+    }
+
+    if(pReplacementParent)
+    {
+        if(mpParent)
+            mpParent->mspChildrens.erase(this);
+        // Trajectory reconstruction follows mTcp for culled keyframes. If the
+        // original keyframe was parentless, preserve the same relative-pose
+        // invariant using the validated explicit fallback parent.
+        mTcp = mTcw * pReplacementParent->GetPoseInverse();
+        // This remains available only to trajectory reconstruction. The bad
+        // keyframe is removed from the active parent's reciprocal child set.
+        mpParent = pReplacementParent;
+    }
+    mspChildrens.clear();
     {
         unique_lock<mutex> lock(mMutexConnections);
-        unique_lock<mutex> lock1(mMutexFeatures);
-
         mConnectedKeyFrameWeights.clear();
         mvpOrderedConnectedKeyFrames.clear();
-
-        // Update Spanning Tree
-        set<KeyFrame*> sParentCandidates;
-        if(mpParent)
-            sParentCandidates.insert(mpParent);
-
-        // Assign at each iteration one children with a parent (the pair with highest covisibility weight)
-        // Include that children as new parent candidate for the rest
-        while(!mspChildrens.empty())
-        {
-            bool bContinue = false;
-
-            int max = -1;
-            KeyFrame* pC;
-            KeyFrame* pP;
-
-            for(set<KeyFrame*>::iterator sit=mspChildrens.begin(), send=mspChildrens.end(); sit!=send; sit++)
-            {
-                KeyFrame* pKF = *sit;
-                if(pKF->isBad())
-                    continue;
-
-                // Check if a parent candidate is connected to the keyframe
-                vector<KeyFrame*> vpConnected = pKF->GetVectorCovisibleKeyFrames();
-                for(size_t i=0, iend=vpConnected.size(); i<iend; i++)
-                {
-                    for(set<KeyFrame*>::iterator spcit=sParentCandidates.begin(), spcend=sParentCandidates.end(); spcit!=spcend; spcit++)
-                    {
-                        if(vpConnected[i]->mnId == (*spcit)->mnId)
-                        {
-                            int w = pKF->GetWeight(vpConnected[i]);
-                            if(w>max)
-                            {
-                                pC = pKF;
-                                pP = vpConnected[i];
-                                max = w;
-                                bContinue = true;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if(bContinue)
-            {
-                pC->ChangeParent(pP);
-                sParentCandidates.insert(pC);
-                mspChildrens.erase(pC);
-            }
-            else
-                break;
-        }
-
-        // If a children has no covisibility links with any parent candidate, assign to the original parent of this KF
-        if(!mspChildrens.empty())
-        {
-            for(set<KeyFrame*>::iterator sit=mspChildrens.begin(); sit!=mspChildrens.end(); sit++)
-            {
-                (*sit)->ChangeParent(mpParent);
-            }
-        }
-
-        if(mpParent){
-            mpParent->EraseChild(this);
-            mTcp = mTcw * mpParent->GetPoseInverse();
-        }
         mbBad = true;
     }
+    treeLock.unlock();
 
-
-    mpMap->EraseKeyFrame(this);
-    mpKeyFrameDB->erase(this);
+    for(KeyFrame* pConnection : vConnections)
+        if(pConnection)
+            pConnection->EraseConnection(this);
+    for(MapPoint* pMP : vMapPoints)
+        if(pMP)
+            pMP->EraseObservation(this);
+    pMap->EraseKeyFrame(this);
+    if(mpKeyFrameDB)
+        mpKeyFrameDB->erase(this);
+    if(usedParentlessFallback)
+        FT_CALC_LOG("research.cull.parentless_fallback.complete kf=%llu parent=%llu",
+                    static_cast<unsigned long long>(mnId),
+                    static_cast<unsigned long long>(pReplacementParent->mnId));
+    FT_CALC_LOG("keyframe.cull.complete id=%llu map=%llu", static_cast<unsigned long long>(mnId),
+                static_cast<unsigned long long>(pMap->GetId()));
+    return true;
 }
 
 bool KeyFrame::isBad()
@@ -855,6 +1090,7 @@ Map* KeyFrame::GetMap()
 
 void KeyFrame::UpdateMap(Map* pMap)
 {
+    std::lock_guard<std::mutex> treeLock(SpanningTreeMutex());
     unique_lock<mutex> lock(mMutexMap);
     mpMap = pMap;
 }
@@ -964,15 +1200,17 @@ void KeyFrame::PostLoad(map<long unsigned int, KeyFrame*>& mpKFid, map<long unsi
         mConnectedKeyFrameWeights[pKFi] = it->second;
     }
 
-    // Restore parent KeyFrame
-    if(mBackupParentId>=0)
-        mpParent = mpKFid[mBackupParentId];
-
-    // KeyFrame childrens
-    mspChildrens.clear();
-    for(vector<long unsigned int>::const_iterator it = mvBackupChildrensId.begin(), end = mvBackupChildrensId.end(); it!=end; ++it)
     {
-        mspChildrens.insert(mpKFid[*it]);
+        std::lock_guard<std::mutex> treeLock(SpanningTreeMutex());
+        // Restore parent KeyFrame
+        mpParent = (mBackupParentId>=0) ? mpKFid[mBackupParentId] : NULL;
+
+        // KeyFrame childrens
+        mspChildrens.clear();
+        for(vector<long unsigned int>::const_iterator it = mvBackupChildrensId.begin(), end = mvBackupChildrensId.end(); it!=end; ++it)
+        {
+            mspChildrens.insert(mpKFid[*it]);
+        }
     }
 
     // Loop edge KeyFrame

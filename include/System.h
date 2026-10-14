@@ -181,6 +181,28 @@ public:
     // Information from most recent processed frame
     // You can call this right after TrackMonocular (or stereo or RGBD)
     int GetTrackingState();
+
+    // Read-only snapshot of the active map's frame identity for consumers that
+    // must know when the world frame is gravity-aligned/metric and when it can
+    // have changed (new map, IMU (re)initialisation, loop closure, merge).
+    struct ActiveMapFrameInfo
+    {
+        bool valid = false;
+        unsigned long map_id = 0;
+        bool imu_initialized = false;
+        bool inertial_ba1 = false;
+        bool inertial_ba2 = false;
+        int change_index = 0;          // Map::GetMapChangeIndex()
+        int change_index_notified = 0; // Map::GetLastMapChange()
+        // RESEARCH frame-epoch contract
+        unsigned long frame_epoch = 0;       // active map's current epoch
+        bool pose_epoch_recorded = false;
+        unsigned long pose_map_id = 0;       // map of the last tracked pose
+        unsigned long pose_frame_epoch = 0;  // epoch of the last tracked pose
+    };
+    ActiveMapFrameInfo GetActiveMapFrameInfo();
+    // History (bounded) of the active map's whole-map similarity transforms.
+    std::vector<Map::FrameTransform> GetActiveMapFrameTransforms();
     std::vector<MapPoint*> GetTrackedMapPoints();
     std::vector<cv::KeyPoint> GetTrackedKeyPointsUn();
 

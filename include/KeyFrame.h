@@ -34,6 +34,7 @@
 #include "CalculationLogApi.h"
 
 #include <mutex>
+#include <cmath>
 
 #include <boost/serialization/base_object.hpp>
 #include <boost/serialization/vector.hpp>
@@ -52,6 +53,8 @@ class GeometricCamera;
 
 class KeyFrame
 {
+    friend bool TreeParentAllowed(KeyFrame*, KeyFrame*, bool);
+    friend bool ChangeParentUnderTreeLock(KeyFrame*, KeyFrame*, bool);
     friend class boost::serialization::access;
 
     template<class Archive>
@@ -210,9 +213,16 @@ public:
     void SetVelocity(const Eigen::Vector3f &Vw_);
 
     // External absolute reference anchoring (compass yaw + baro alt), set by Tracking
-    void SetExternalYaw(const double yawSlam, const double sigmaRad){ mbHasExtYaw = true; mExtYawSlam = yawSlam; mExtYawSigmaRad = sigmaRad; }
+    // A measurement is accepted only with a finite value and a finite, strictly
+    // positive sigma; otherwise the reference is cleared rather than inserted
+    // into the graph with an invalid information matrix.
+    void SetExternalYaw(const double yawSlam, const double sigmaRad){
+        if(!std::isfinite(yawSlam) || !std::isfinite(sigmaRad) || !(sigmaRad > 0.0)) { mbHasExtYaw = false; return; }
+        mbHasExtYaw = true; mExtYawSlam = yawSlam; mExtYawSigmaRad = sigmaRad; }
     void ClearExternalYaw(){ mbHasExtYaw = false; }
-    void SetExternalAlt(const double altSlam, const double sigmaM){ mbHasExtAlt = true; mExtAltSlam = altSlam; mExtAltSigmaM = sigmaM; }
+    void SetExternalAlt(const double altSlam, const double sigmaM){
+        if(!std::isfinite(altSlam) || !std::isfinite(sigmaM) || !(sigmaM > 0.0)) { mbHasExtAlt = false; return; }
+        mbHasExtAlt = true; mExtAltSlam = altSlam; mExtAltSigmaM = sigmaM; }
     void ClearExternalAlt(){ mbHasExtAlt = false; }
     bool GetHasExternalYaw() const { return mbHasExtYaw; }
     double GetExternalYawSlam() const { return mExtYawSlam; }
@@ -252,9 +262,16 @@ public:
     // Spanning tree functions
     void AddChild(KeyFrame* pKF);
     void EraseChild(KeyFrame* pKF);
-    void ChangeParent(KeyFrame* pKF);
+    bool ChangeParent(KeyFrame* pKF);
+    // Used only while LoopClosing rewires a map merge under its stopped-mapper
+    // transaction; the resulting stable graph must still be same-map.
+    bool ChangeParentForMerge(KeyFrame* pKF);
     std::set<KeyFrame*> GetChilds();
     KeyFrame* GetParent();
+    // Resolve a live reference keyframe and accumulated culling transform for
+    // trajectory reconstruction. Returns false when reset/merge invalidated
+    // the historical path or the chain is cyclic/incomplete.
+    bool ResolveTrajectoryReference(KeyFrame*& pRoot, Sophus::SE3f& TReferenceToRoot);
     bool hasChild(KeyFrame* pKF);
     void SetFirstConnection(bool bFirst);
 
@@ -289,7 +306,10 @@ public:
     void SetErase();
 
     // Set/check bad flag
-    void SetBadFlag();
+    bool SetBadFlag(KeyFrame* pFallbackParent = NULL, bool bMergeInertialLinks = false);
+    // Same transaction for a caller that already holds pHeldMap->mMutexMapUpdate
+    // (std::mutex is not recursive). The lock is taken if the keyframe belongs to another map.
+    bool SetBadFlagMapUpdateHeld(Map* pHeldMap);
     bool isBad();
 
     // Compute Scene Depth (q=2 median). Used in monocular.
@@ -305,6 +325,11 @@ public:
 
     Map* GetMap();
     void UpdateMap(Map* pMap);
+    void DetachTreeRelations();
+    static std::mutex& SpanningTreeMutex();
+private:
+    bool SetBadFlagImpl(KeyFrame* pFallbackParent, bool bMergeInertialLinks, Map* pHeldMap);
+public:
 
     void SetNewBias(const IMU::Bias &b);
     Eigen::Vector3f GetGyroBias();
@@ -459,12 +484,15 @@ protected:
     bool mbHasVelocity;
 
     // External absolute reference anchoring (compass yaw + baro alt)
-    bool mbHasExtYaw;
-    double mExtYawSlam;       // target camera world yaw (rad, SLAM frame)
-    double mExtYawSigmaRad;   // prior sigma (rad)
-    bool mbHasExtAlt;
-    double mExtAltSlam;       // target camera world z (m, SLAM frame)
-    double mExtAltSigmaM;     // prior sigma (m)
+    // Default member initializers: every constructor (including the two
+    // initial monocular keyframes, which never pass through
+    // Tracking::SetKeyFrameExternalRefs) starts with no external reference.
+    bool mbHasExtYaw = false;
+    double mExtYawSlam = 0.0;       // target camera world yaw (rad, SLAM frame)
+    double mExtYawSigmaRad = 0.0;   // prior sigma (rad)
+    bool mbHasExtAlt = false;
+    double mExtAltSlam = 0.0;       // target camera world z (m, SLAM frame)
+    double mExtAltSigmaM = 0.0;     // prior sigma (m)
 
     //Transformation matrix between cameras in stereo fisheye
     Sophus::SE3<float> mTlr;

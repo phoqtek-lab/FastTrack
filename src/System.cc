@@ -620,6 +620,17 @@ void System::SaveTrajectoryTUM(const string &filename)
 
     vector<KeyFrame*> vpKFs = mpAtlas->GetAllKeyFrames();
     sort(vpKFs.begin(),vpKFs.end(),KeyFrame::lId);
+    if(vpKFs.empty())
+    {
+        FT_CALC_LOG("system.trajectory.abort format=tum reason=no_keyframes");
+        return;
+    }
+    Map* pExportMap = vpKFs[0]->GetMap();
+    if(!pExportMap)
+    {
+        FT_CALC_LOG("system.trajectory.abort format=tum reason=detached_export_map");
+        return;
+    }
 
     // Transform all keyframes so that the first keyframe is at the origin.
     // After a loop closure the first keyframe might not be at the origin.
@@ -645,15 +656,14 @@ void System::SaveTrajectoryTUM(const string &filename)
             continue;
 
         KeyFrame* pKF = *lRit;
-
         Sophus::SE3f Trw;
 
-        // If the reference keyframe was culled, traverse the spanning tree to get a suitable keyframe.
-        while(pKF->isBad())
-        {
-            Trw = Trw * pKF->mTcp;
-            pKF = pKF->GetParent();
-        }
+        // Culling retains a separate historical path. A reset-invalidated or
+        // malformed path must not be dereferenced or stitched to a new map.
+        if(!pKF || !pKF->ResolveTrajectoryReference(pKF, Trw))
+            continue;
+        if(pKF->GetMap() != pExportMap)
+            continue;
 
         Trw = Trw * pKF->GetPose() * Two;
 
@@ -786,13 +796,8 @@ void System::SaveTrajectoryEuRoC(const string &filename)
 
         //cout << "2.5" << endl;
 
-        while(pKF->isBad())
-        {
-            //cout << " 2.bad" << endl;
-            Trw = Trw * pKF->mTcp;
-            pKF = pKF->GetParent();
-            //cout << "--Parent KF: " << pKF->mnId << endl;
-        }
+        if(!pKF->ResolveTrajectoryReference(pKF, Trw))
+            continue;
 
         if(!pKF || pKF->GetMap() != pBiggerMap)
         {
@@ -831,6 +836,11 @@ void System::SaveTrajectoryEuRoC(const string &filename)
 void System::SaveTrajectoryEuRoC(const string &filename, Map* pMap)
 {
     FT_CALC_SCOPE();
+    if(!pMap)
+    {
+        FT_CALC_LOG("system.trajectory.abort format=euroc reason=null_map");
+        return;
+    }
     FT_CALC_LOG("system.trajectory.save format=euroc kind=frame map_id=%llu path=%s",
                 static_cast<unsigned long long>(pMap->GetId()), filename.c_str());
     /*if(mSensor==MONOCULAR)
@@ -843,7 +853,12 @@ void System::SaveTrajectoryEuRoC(const string &filename, Map* pMap)
 
     vector<KeyFrame*> vpKFs = pMap->GetAllKeyFrames();
     sort(vpKFs.begin(),vpKFs.end(),KeyFrame::lId);
-
+    if(vpKFs.empty())
+    {
+        FT_CALC_LOG("system.trajectory.abort format=euroc reason=no_keyframes map_id=%llu",
+                    static_cast<unsigned long long>(pMap->GetId()));
+        return;
+    }
     // Transform all keyframes so that the first keyframe is at the origin.
     // After a loop closure the first keyframe might not be at the origin.
     Sophus::SE3f Twb; // Can be word to cam0 or world to b dependingo on IMU or not.
@@ -892,14 +907,8 @@ void System::SaveTrajectoryEuRoC(const string &filename, Map* pMap)
 
         //cout << "2.5" << endl;
 
-        while(pKF->isBad())
-        {
-            //cout << " 2.bad" << endl;
-            Trw = Trw * pKF->mTcp;
-            pKF = pKF->GetParent();
-            //cout << "--Parent KF: " << pKF->mnId << endl;
-        }
-
+        if(!pKF->ResolveTrajectoryReference(pKF, Trw))
+            continue;
         if(!pKF || pKF->GetMap() != pMap)
         {
             //cout << "--Parent KF is from another map" << endl;
@@ -1008,13 +1017,8 @@ void System::SaveTrajectoryEuRoC(const string &filename, Map* pMap)
 
         //cout << "2.5" << endl;
 
-        while(pKF->isBad())
-        {
-            //cout << " 2.bad" << endl;
-            Trw = Trw * pKF->mTcp;
-            pKF = pKF->GetParent();
-            //cout << "--Parent KF: " << pKF->mnId << endl;
-        }
+        if(!pKF->ResolveTrajectoryReference(pKF, Trw))
+            continue;
 
         if(!pKF || pKF->GetMap() != pBiggerMap)
         {
@@ -1239,13 +1243,10 @@ void System::SaveKeyFrameTrajectoryEuRoC(const string &filename, Map* pMap)
     {
         ORB_SLAM3::KeyFrame* pKF = *lRit;
 
-        cv::Mat Trw = cv::Mat::eye(4,4,CV_32F);
-
-        while(pKF->isBad())
-        {
-            Trw = Trw * Converter::toCvMat(pKF->mTcp.matrix());
-            pKF = pKF->GetParent();
-        }
+        Sophus::SE3f TReferenceToRoot;
+        if(!pKF || !pKF->ResolveTrajectoryReference(pKF, TReferenceToRoot))
+            continue;
+        cv::Mat Trw = Converter::toCvMat(TReferenceToRoot.matrix());
 
         Trw = Trw * pKF->GetPoseCv() * Two;
 
@@ -1272,6 +1273,17 @@ void System::SaveTrajectoryKITTI(const string &filename)
 
     vector<KeyFrame*> vpKFs = mpAtlas->GetAllKeyFrames();
     sort(vpKFs.begin(),vpKFs.end(),KeyFrame::lId);
+    if(vpKFs.empty())
+    {
+        FT_CALC_LOG("system.trajectory.abort format=kitti reason=no_keyframes");
+        return;
+    }
+    Map* pExportMap = vpKFs[0]->GetMap();
+    if(!pExportMap)
+    {
+        FT_CALC_LOG("system.trajectory.abort format=kitti reason=detached_export_map");
+        return;
+    }
 
     // Transform all keyframes so that the first keyframe is at the origin.
     // After a loop closure the first keyframe might not be at the origin.
@@ -1299,11 +1311,10 @@ void System::SaveTrajectoryKITTI(const string &filename)
         if(!pKF)
             continue;
 
-        while(pKF->isBad())
-        {
-            Trw = Trw * pKF->mTcp;
-            pKF = pKF->GetParent();
-        }
+        if(!pKF->ResolveTrajectoryReference(pKF, Trw))
+            continue;
+        if(pKF->GetMap() != pExportMap)
+            continue;
 
         Trw = Trw * pKF->GetPose() * Tow;
 
@@ -1375,6 +1386,41 @@ void System::SaveDebugData(const int &initIdx)
     f.close();
 }
 
+
+System::ActiveMapFrameInfo System::GetActiveMapFrameInfo()
+{
+    ActiveMapFrameInfo info;
+    if(!mpAtlas)
+        return info;
+    Map* pMap = mpAtlas->GetCurrentMap();
+    if(!pMap)
+        return info;
+    info.valid = true;
+    info.map_id = pMap->GetId();
+    info.imu_initialized = pMap->isImuInitialized();
+    info.inertial_ba1 = pMap->GetIniertialBA1();
+    info.inertial_ba2 = pMap->GetIniertialBA2();
+    info.change_index = pMap->GetMapChangeIndex();
+    info.change_index_notified = pMap->GetLastMapChange();
+    info.frame_epoch = pMap->GetFrameEpoch();
+    if(mpTracker)
+    {
+        info.pose_epoch_recorded = mpTracker->mbPoseEpochRecorded;
+        info.pose_map_id = mpTracker->mnPoseMapId;
+        info.pose_frame_epoch = mpTracker->mnPoseFrameEpoch;
+    }
+    return info;
+}
+
+std::vector<Map::FrameTransform> System::GetActiveMapFrameTransforms()
+{
+    if(!mpAtlas)
+        return {};
+    Map* pMap = mpAtlas->GetCurrentMap();
+    if(!pMap)
+        return {};
+    return pMap->GetFrameTransforms();
+}
 
 int System::GetTrackingState()
 {
