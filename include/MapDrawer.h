@@ -24,7 +24,9 @@
 #include"MapPoint.h"
 #include"KeyFrame.h"
 #include "Settings.h"
-#include<pangolin/pangolin.h>
+#ifdef FASTTRACK_WITH_VIEWER
+#include <pangolin/pangolin.h>
+#endif
 
 #include<mutex>
 
@@ -43,12 +45,16 @@ public:
 
     Atlas* mpAtlas;
 
+#ifdef FASTTRACK_WITH_VIEWER
     void DrawMapPoints();
     void DrawKeyFrames(const bool bDrawKF, const bool bDrawGraph, const bool bDrawInertialGraph, const bool bDrawOptLba);
     void DrawCurrentCamera(pangolin::OpenGlMatrix &Twc);
+#endif
     void SetCurrentCameraPose(const Sophus::SE3f &Tcw);
     void SetReferenceKeyFrame(KeyFrame *pKF);
+#ifdef FASTTRACK_WITH_VIEWER
     void GetCurrentOpenGLCameraMatrix(pangolin::OpenGlMatrix &M, pangolin::OpenGlMatrix &MOw);
+#endif
 
 private:
 

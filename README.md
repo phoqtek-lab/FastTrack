@@ -59,8 +59,10 @@ We use [OpenCV](http://opencv.org) to manipulate images and features. Dowload an
 ## Eigen3
 Required by g2o (see below). Download and install instructions can be found at: http://eigen.tuxfamily.org. **Required at least 3.1.0**.
 
-## Pangolin
+## Pangolin (optional)
 We use [Pangolin](https://github.com/stevenlovegrove/Pangolin) for visualization and user interface. Download and install instructions can be found at: https://github.com/stevenlovegrove/Pangolin.
+
+Pangolin is only needed for the map viewer, which is off by default. Configure with `-DFASTTRACK_WITH_VIEWER=ON` to build it; otherwise FastTrack builds and runs headless without Pangolin.
 
 Pangolin avoids to use Eigen in CUDA. To compile this project, guards in line 475 of glsl.hpp and 47 of glsl.h should be commented. Checkout [this issue](https://github.com/stevenlovegrove/Pangolin/issues/814) in ORB-SLAM3 github issues. 
 

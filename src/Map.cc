@@ -31,7 +31,7 @@ mbFail(false), mIsInUse(false), mHasTumbnail(false), mbBad(false), mnMapChangeNo
 {
     FT_CALC_SCOPE();
     mnId=nNextId++;
-    mThumbnail = static_cast<GLubyte*>(NULL);
+    mThumbnail = static_cast<unsigned char*>(NULL);
 }
 
 Map::Map(int initKFid):mnInitKFid(initKFid), mnMaxKFid(initKFid),/*mnLastLoopKFid(initKFid),*/ mnBigChangeIdx(0), mIsInUse(false),
@@ -40,7 +40,7 @@ Map::Map(int initKFid):mnInitKFid(initKFid), mnMaxKFid(initKFid),/*mnLastLoopKFi
 {
     FT_CALC_SCOPE();
     mnId=nNextId++;
-    mThumbnail = static_cast<GLubyte*>(NULL);
+    mThumbnail = static_cast<unsigned char*>(NULL);
 }
 
 Map::~Map()
@@ -53,7 +53,7 @@ Map::~Map()
 
     if(mThumbnail)
         delete mThumbnail;
-    mThumbnail = static_cast<GLubyte*>(NULL);
+    mThumbnail = static_cast<unsigned char*>(NULL);
 
     mvpReferenceMapPoints.clear();
     mvpKeyFrameOrigins.clear();

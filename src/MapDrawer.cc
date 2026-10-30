@@ -20,7 +20,9 @@
 #include "MapPoint.h"
 #include "KeyFrame.h"
 #include "CalculationLogger.h"
+#ifdef FASTTRACK_WITH_VIEWER
 #include <pangolin/pangolin.h>
+#endif
 #include <mutex>
 
 namespace ORB_SLAM3
@@ -139,6 +141,7 @@ bool MapDrawer::ParseViewerParamFile(cv::FileStorage &fSettings)
     return !b_miss_params;
 }
 
+#ifdef FASTTRACK_WITH_VIEWER
 void MapDrawer::DrawMapPoints()
 {
     FT_CALC_SCOPE();
@@ -454,6 +457,7 @@ void MapDrawer::DrawCurrentCamera(pangolin::OpenGlMatrix &Twc)
 
     glPopMatrix();
 }
+#endif
 
 
 void MapDrawer::SetCurrentCameraPose(const Sophus::SE3f &Tcw)
@@ -463,6 +467,7 @@ void MapDrawer::SetCurrentCameraPose(const Sophus::SE3f &Tcw)
     mCameraPose = Tcw.inverse();
 }
 
+#ifdef FASTTRACK_WITH_VIEWER
 void MapDrawer::GetCurrentOpenGLCameraMatrix(pangolin::OpenGlMatrix &M, pangolin::OpenGlMatrix &MOw)
 {
     FT_CALC_SCOPE();
@@ -484,4 +489,5 @@ void MapDrawer::GetCurrentOpenGLCameraMatrix(pangolin::OpenGlMatrix &M, pangolin
     MOw.m[13] = Twc(1,3);
     MOw.m[14] = Twc(2,3);
 }
+#endif
 } //namespace ORB_SLAM

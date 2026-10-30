@@ -23,7 +23,9 @@
 #include "Kernels/StereoMatchKernel.h"
 #include <csignal>
 #include <thread>
+#ifdef FASTTRACK_WITH_VIEWER
 #include <pangolin/pangolin.h>
+#endif
 #include <iomanip>
 #include <openssl/md5.h>
 #include <boost/serialization/base_object.hpp>
@@ -238,7 +240,16 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
     //usleep(10*1000*1000);
 
     //Initialize the Viewer thread and launch
-    if(bUseViewer)
+    bool bStartViewer = bUseViewer;
+#ifndef FASTTRACK_WITH_VIEWER
+    if(bStartViewer)
+    {
+        std::cerr << "ORB-SLAM3: viewer requested but FastTrack was built without "
+                     "FASTTRACK_WITH_VIEWER; running headless." << std::endl;
+        bStartViewer = false;
+    }
+#endif
+    if(bStartViewer)
     //if(false) // TODO
     {
         mpViewer = new Viewer(this, mpFrameDrawer,mpMapDrawer,mpTracker,strSettingsFile,settings_);
