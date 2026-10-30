@@ -19,7 +19,9 @@
 
 #include "Viewer.h"
 #include "CalculationLogger.h"
+#ifdef FASTTRACK_WITH_VIEWER
 #include <pangolin/pangolin.h>
+#endif
 
 #include <mutex>
 
@@ -175,6 +177,7 @@ void Viewer::Run()
     mbFinished = false;
     mbStopped = false;
 
+#ifdef FASTTRACK_WITH_VIEWER
     pangolin::CreateWindowAndBind("ORB-SLAM3: Map Viewer",1024,768);
 
     // 3D Mouse handler requires depth testing to be enabled
@@ -390,6 +393,7 @@ void Viewer::Run()
         if(CheckFinish())
             break;
     }
+#endif
 
     SetFinish();
 }
