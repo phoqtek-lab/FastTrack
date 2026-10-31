@@ -27,6 +27,7 @@
 #include<string>
 #include<thread>
 #include<opencv2/core/core.hpp>
+#include <Eigen/Core>
 
 #include "Tracking.h"
 #include "FrameDrawer.h"
@@ -41,6 +42,7 @@
 #include "Settings.h"
 #include "Stats/TrackingStats.h"
 #include "CalculationLogApi.h"
+#include "PriorMap.h"
 
 
 namespace ORB_SLAM3
@@ -105,6 +107,9 @@ public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
     // Initialize the SLAM system. It launches the Local Mapping, Loop Closing and Viewer threads.
     System(const string &strVocFile, const string &strSettingsFile, const eSensor sensor, const bool bUseViewer = true, const int initFr = 0, const string &strSequence = std::string());
+    // Same, with prior-map start / map save options (PriorMap.h). PriorMapOptions() reproduces the constructor above.
+    System(const string &strVocFile, const string &strSettingsFile, const eSensor sensor, const PriorMapOptions &prior,
+           const bool bUseViewer = true, const int initFr = 0, const string &strSequence = std::string());
 
     // Proccess the given stereo frame. Images must be synchronized and rectified.
     // Input images: RGB (CV_8UC3) or grayscale (CV_8U). RGB is converted to grayscale.
@@ -127,6 +132,31 @@ public:
     // When both flags are false the external-reference path stays inert.
     void SetExternalReference(const bool bHasYaw, const double yawDeg, const bool bHasAlt, const double altM);
 
+    // Gyro bias measured while the vehicle was verifiably at rest (rad/s, IMU body frame, w_true = w_meas - bg),
+    // used as the gyro-bias prior (1/sigma^2) by IMU initialization, BA1 and BA2 (LocalMapping::SetRestGyroBiasPrior).
+    // Ignored unless sigma > 0 and bg is finite. ClearRestGyroBiasPrior restores the default priors.
+    void SetRestGyroBiasPrior(const Eigen::Vector3f &bg, const float sigma);
+    // Flight-controller attitude (world z up, IMU body frame) for IMU initialization gravity (LocalMapping).
+    void AddGravityReference(double t, const Eigen::Matrix3f &Rwb);
+    // B3 metric initialization: barometric height samples in the IMU clock.
+    void AddAltitudeReference(double t, double h);
+    void SetGravityFromReference(bool b);
+    void ClearRestGyroBiasPrior();
+    // Init profile (2026-10-26): accelerometer-bias prior from a saved initialization (LocalMapping::SetAccBiasPrior).
+    void SetAccBiasPrior(const Eigen::Vector3f &ba, const float sigma);
+    void ClearAccBiasPrior();
+    // Converged IMU biases of the last keyframe of the active map, for saving an init profile. False unless the map
+    // is IMU-initialized and inertial BA2 is done. nKF = keyframes in the map.
+    bool GetInitProfileState(Eigen::Vector3f &ba, Eigen::Vector3f &bg, int &nKF);
+    // F1 (2026-10-27): last keyframe barometric scale observation (h = baro height above the pad, d = camera to the
+    // local ground plane, s = (h + c) / d, z = camera z, tilt = plane tilt deg, nI/nP = plane inliers/points).
+    // seq increases with every observation. False before the first one.
+    // P1: per-frame pose optimization mode (Tracking::SetPoseOptimizationMode). Call from the tracking thread.
+    void SetPoseOptimizationMode(int mode);
+    void SetPoseOptimizationTurn(double rate_dps, double hold_s);  // P3: modes 3/4
+    bool GetBaroScaleObservation(double &t, double &h, double &d, double &s, double &z, double &tilt, int &nI,
+                                 int &nP, unsigned long &mapId, unsigned long &seq);
+
 
     // This stops local mapping thread (map building) and performs only camera tracking.
     void ActivateLocalizationMode();
@@ -140,6 +170,16 @@ public:
     // Reset the system (clear Atlas or the active map)
     void Reset();
     void ResetActiveMap();
+
+    // Prior-map start. ResetToPriorMap: session reset that keeps the prior map (executed in the next Track call;
+    // without a usable prior map it is a full Reset()). SaveMap: call from the thread that calls Track*, between
+    // frames; it holds LocalMapping and waits for LoopClosing (and a running global BA, up to gba_wait_s).
+    void ResetToPriorMap();
+    bool HasUsablePriorMap();
+    // Call from the thread that calls Track*, before the frame after a known pause (e.g. SaveMap).
+    void AllowTimeGapOnce(double gapS);
+    PriorMapStatus GetPriorMapStatus();
+    SaveMapResult SaveMap(const std::string &path = std::string());
 
     // All threads will be requested to finish.
     // It waits until all threads have finished.
@@ -225,6 +265,10 @@ private:
 
     void SaveAtlas(int type);
     bool LoadAtlas(int type);
+    bool LoadAtlasFile(const std::string &path, PriorMapStatus &st);
+    SaveMapResult WriteAtlasFile(const std::string &path);
+    PriorMapOptions mPriorOpt;
+    bool mbResetToPriorMap;
 
     string CalculateCheckSum(string filename, int type);
 

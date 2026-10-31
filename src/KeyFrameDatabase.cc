@@ -808,6 +808,12 @@ vector<KeyFrame*> KeyFrameDatabase::DetectRelocalizationCandidates(Frame *F, Map
             for(list<KeyFrame*>::iterator lit=lKFs.begin(), lend= lKFs.end(); lit!=lend; lit++)
             {
                 KeyFrame* pKFi=*lit;
+                // Only the target map's keyframes take part. The word-count (80 %) and score (75 %) thresholds
+                // below are relative to the best keyframe; with the map filter applied only at the end, the live
+                // session map's keyframes set those bars and every keyframe of a loaded prior map was cut
+                // (2026-10-22: 0 candidates on every frame once the session map existed).
+                if(pMap && pKFi->GetMap() != pMap)
+                    continue;
                 if(pKFi->mnRelocQuery!=F->mnId)
                 {
                     pKFi->mnRelocWords=0;

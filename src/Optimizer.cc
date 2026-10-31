@@ -38,6 +38,9 @@
 #include "Converter.h"
 
 #include<mutex>
+#include <iomanip>  // C5 (2026-10-31)
+#include <cstdlib>
+#include <string>
 
 #include "OptimizableTypes.h"
 #include "CalculationLogger.h"
@@ -405,7 +408,9 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
     }
 }
 
-void Optimizer::FullInertialBA(Map *pMap, int its, const bool bFixLocal, const long unsigned int nLoopId, bool *pbStopFlag, bool bInit, float priorG, float priorA, Eigen::VectorXd *vSingVal, bool *bHess)
+void Optimizer::FullInertialBA(Map *pMap, int its, const bool bFixLocal, const long unsigned int nLoopId, bool *pbStopFlag, bool bInit, float priorG, float priorA, Eigen::VectorXd *vSingVal, bool *bHess,
+                               const Eigen::Vector3f *pGyroPrior, double gyroPriorInfo,
+                               const Eigen::Vector3f *pAccPrior, double accPriorInfo)
 {
     FT_CALC_SCOPE();
     FT_CALC_LOG("optimizer.full_inertial_ba.begin map=%llu iterations=%d fix_local=%d loop_id=%llu init=%d",
@@ -604,17 +609,47 @@ void Optimizer::FullInertialBA(Map *pMap, int its, const bool bFixLocal, const l
         Eigen::Vector3f bprior;
         bprior.setZero();
 
-        EdgePriorAcc* epa = new EdgePriorAcc(bprior);
+        // Init profile: the saved accelerometer bias replaces the prior towards zero.
+        EdgePriorAcc* epa = new EdgePriorAcc(pAccPrior ? *pAccPrior : bprior);
         epa->setVertex(0,dynamic_cast<g2o::OptimizableGraph::Vertex*>(VA));
-        double infoPriorA = priorA; //
+        double infoPriorA = pAccPrior ? std::max<double>(priorA, accPriorInfo) : priorA; //
         epa->setInformation(infoPriorA*Eigen::Matrix3d::Identity());
         optimizer.addEdge(epa);
 
-        EdgePriorGyro* epg = new EdgePriorGyro(bprior);
+        // Rest-measured gyro bias (LocalMapping::SetRestGyroBiasPrior) replaces the prior towards zero.
+        EdgePriorGyro* epg = new EdgePriorGyro(pGyroPrior ? *pGyroPrior : bprior);
         epg->setVertex(0,dynamic_cast<g2o::OptimizableGraph::Vertex*>(VG));
-        double infoPriorG = priorG; //
+        double infoPriorG = pGyroPrior ? std::max<double>(priorG, gyroPriorInfo) : priorG; //
         epg->setInformation(infoPriorG*Eigen::Matrix3d::Identity());
         optimizer.addEdge(epg);
+    }
+    else if (pGyroPrior || pAccPrior)
+    {
+        // Per-keyframe biases (no common bias vertex): anchor the earliest inertial keyframe's gyro bias to the
+        // rest-measured value; the bias random-walk edges carry it to the later keyframes.
+        KeyFrame* pFirst = NULL;
+        for(KeyFrame* pKFi : vpKFs)
+            if(pKFi->bImu && pKFi->mnId<=maxKFid && !pKFi->isBad() && (!pFirst || pKFi->mnId<pFirst->mnId))
+                pFirst = pKFi;
+        // Init profile: same anchoring for the accelerometer bias.
+        g2o::HyperGraph::Vertex* VAf = (pFirst && pAccPrior) ? optimizer.vertex(maxKFid+3*(pFirst->mnId)+3) : NULL;
+        if (VAf)
+        {
+            EdgePriorAcc* epa = new EdgePriorAcc(*pAccPrior);
+            epa->setVertex(0,dynamic_cast<g2o::OptimizableGraph::Vertex*>(VAf));
+            epa->setInformation(accPriorInfo*Eigen::Matrix3d::Identity());
+            optimizer.addEdge(epa);
+        }
+        g2o::HyperGraph::Vertex* VG = (pFirst && pGyroPrior) ? optimizer.vertex(maxKFid+3*(pFirst->mnId)+2) : NULL;
+        if (VG)
+        {
+            EdgePriorGyro* epg = new EdgePriorGyro(*pGyroPrior);
+            epg->setVertex(0,dynamic_cast<g2o::OptimizableGraph::Vertex*>(VG));
+            epg->setInformation(gyroPriorInfo*Eigen::Matrix3d::Identity());
+            optimizer.addEdge(epg);
+        }
+        FT_CALC_LOG("optimizer.full_inertial_ba.rest_gyro_prior first_kf=%lld applied=%d info=%f",
+                    pFirst ? static_cast<long long>(pFirst->mnId) : -1LL, VG ? 1 : 0, gyroPriorInfo);
     }
 
     const float thHuberMono = sqrt(5.991);
@@ -2665,6 +2700,38 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
             VA->setId(maxKFid+3*(pKFi->mnId)+3);
             VA->setFixed(false);
             optimizer.addVertex(VA);
+            // Init profile: accelerometer-bias prior of this keyframe.
+            if(pKFi->mbAccPrior && pKFi->mAccPriorInfo > 0.0)
+            {
+                EdgePriorAcc* epa = new EdgePriorAcc(pKFi->mAccPrior);
+                epa->setVertex(0,VA);
+                epa->setInformation(pKFi->mAccPriorInfo * Eigen::Matrix3d::Identity());
+                optimizer.addEdge(epa);
+            }
+            // WP B2 rest observations for keyframes taken at strong rest.
+            if(pKFi->mbRestObs)
+            {
+                EdgePriorGyro* erg = new EdgePriorGyro(pKFi->mRestGyro);
+                erg->setVertex(0,VG);
+                erg->setInformation(pKFi->mRestInfoG * Eigen::Matrix3d::Identity());
+                optimizer.addEdge(erg);
+                EdgeRestGravity* era = new EdgeRestGravity(pKFi->mRestAcc);
+                era->setVertex(0,VP);
+                era->setVertex(1,VA);
+                era->setInformation(pKFi->mRestInfoA * Eigen::Matrix3d::Identity());
+                optimizer.addEdge(era);
+            }
+            // C4 (2026-10-31): baro vertical-velocity factor (target set by LocalMapping for metric maps only).
+            if(pKFi->mbBaroVzObs && pKFi->mBaroVzInfo > 0.0)
+            {
+                EdgeBaroVz* ebv = new EdgeBaroVz(pKFi->mBaroVz);
+                ebv->setVertex(0,VV);
+                ebv->setInformation(Eigen::Matrix<double,1,1>::Identity() * pKFi->mBaroVzInfo);
+                g2o::RobustKernelHuber* rkv = new g2o::RobustKernelHuber;
+                rkv->setDelta(5.0);
+                ebv->setRobustKernel(rkv);
+                optimizer.addEdge(ebv);
+            }
         }
     }
 
@@ -2757,7 +2824,7 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
                 // error due to fixing variables.
                 g2o::RobustKernelHuber* rki = new g2o::RobustKernelHuber;
                 vei[i]->setRobustKernel(rki);
-                if(i==N-1)
+                if(i==N-1 && !pKF->mbC6FullTail)  // C6 (2026-10-31): full weight while climbing (research switch)
                     vei[i]->setInformation(vei[i]->information()*1e-2);
                 rki->setDelta(sqrt(16.92));
             }
@@ -3012,8 +3079,31 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
     optimizer.initializeOptimization();
     optimizer.computeActiveErrors();
     float err = optimizer.activeRobustChi2();
-    optimizer.optimize(opt_it); // Originally to 2
+    // C5 (2026-10-31, log only): newest keyframe's inertial edge before/after (FASTTRACK_C5_LOG=1).
+    static const bool bC5 = std::getenv("FASTTRACK_C5_LOG") && std::string(std::getenv("FASTTRACK_C5_LOG")) == "1";
+    Eigen::Matrix<double,9,1> c5e0 = Eigen::Matrix<double,9,1>::Zero();
+    if(bC5 && N > 0 && vei[0]) { vei[0]->computeError(); c5e0 = vei[0]->error(); }
+    // C6 log: window z before optimize (pose vertices)
+    std::vector<double> c6z0;
+    if(bC5) for(int i=0;i<N;i++) c6z0.push_back(static_cast<VertexPose*>(optimizer.vertex(vpOptimizableKFs[i]->mnId))->estimate().twb(2));
+    const int c5it = optimizer.optimize(opt_it); // Originally to 2
     float err_end = optimizer.activeRobustChi2();
+    if(bC5 && N > 0 && vei[0])
+    {
+        vei[0]->computeError(); const Eigen::Matrix<double,9,1> e1 = vei[0]->error();
+        std::cerr << std::fixed << std::setprecision(4) << "FastTrack C5 lba kf=" << pKF->mnId << " t=" << pKF->mTimeStamp
+                  << " N=" << N << " it=" << c5it << " chi2=" << err << "->" << err_end
+                  << " dT=" << pKF->mpImuPreintegrated->dT
+                  << " e0[r v p]=" << c5e0.segment<3>(0).norm() << " " << c5e0.segment<3>(3).transpose() << " " << c5e0.segment<3>(6).transpose()
+                  << " e1[r v p]=" << e1.segment<3>(0).norm() << " " << e1.segment<3>(3).transpose() << " " << e1.segment<3>(6).transpose()
+                  << " chi2_e1=" << vei[0]->chi2() << std::defaultfloat << std::setprecision(6) << std::endl;
+        double c6mean = 0.0, c6old = 0.0;
+        for(int i=0;i<N;i++) { const double dz = static_cast<VertexPose*>(optimizer.vertex(vpOptimizableKFs[i]->mnId))->estimate().twb(2) - c6z0[i]; c6mean += dz / N; if(i==N-1) c6old = dz; }
+        std::cerr << std::fixed << std::setprecision(4) << "FastTrack C6 win kf=" << pKF->mnId << " t=" << pKF->mTimeStamp << " N=" << N
+                  << " dz_mean=" << c6mean << " dz_oldest=" << c6old << " dz_newest=" << (N>0 ? static_cast<VertexPose*>(optimizer.vertex(pKF->mnId))->estimate().twb(2) - c6z0[0] : 0.0)
+                  << " tail_chi2=" << (N>0 && vei[N-1] ? vei[N-1]->chi2() : -1.0) << " full_tail=" << (pKF->mbC6FullTail ? 1 : 0)
+                  << std::defaultfloat << std::setprecision(6) << std::endl;
+    }
     if(pbStopFlag)
         optimizer.setForceStopFlag(pbStopFlag);
 
@@ -3214,7 +3304,9 @@ Eigen::MatrixXd Optimizer::Marginalize(const Eigen::MatrixXd &H, const int &star
     return res;
 }
 
-void Optimizer::InertialOptimization(Map *pMap, Eigen::Matrix3d &Rwg, double &scale, Eigen::Vector3d &bg, Eigen::Vector3d &ba, bool bMono, Eigen::MatrixXd  &covInertial, bool bFixedVel, bool bGauss, float priorG, float priorA)
+void Optimizer::InertialOptimization(Map *pMap, Eigen::Matrix3d &Rwg, double &scale, Eigen::Vector3d &bg, Eigen::Vector3d &ba, bool bMono, Eigen::MatrixXd  &covInertial, bool bFixedVel, bool bGauss, float priorG, float priorA,
+                                     const Eigen::Vector3f *pGyroPrior, double gyroPriorInfo, bool bFixGravity,
+                                     const Eigen::Vector3f *pAccPrior, double accPriorInfo)
 {
     FT_CALC_SCOPE();
     FT_CALC_LOG("optimizer.inertial.begin map=%llu monocular=%d fixed_velocity=%d gauss=%d prior_g=%f prior_a=%f",
@@ -3281,21 +3373,24 @@ void Optimizer::InertialOptimization(Map *pMap, Eigen::Matrix3d &Rwg, double &sc
     Eigen::Vector3f bprior;
     bprior.setZero();
 
-    EdgePriorAcc* epa = new EdgePriorAcc(bprior);
+    // Init profile: the saved accelerometer bias replaces the prior towards zero.
+    EdgePriorAcc* epa = new EdgePriorAcc(pAccPrior ? *pAccPrior : bprior);
     epa->setVertex(0,dynamic_cast<g2o::OptimizableGraph::Vertex*>(VA));
-    double infoPriorA = priorA;
+    double infoPriorA = pAccPrior ? std::max<double>(priorA, accPriorInfo) : priorA;
     epa->setInformation(infoPriorA*Eigen::Matrix3d::Identity());
     optimizer.addEdge(epa);
-    EdgePriorGyro* epg = new EdgePriorGyro(bprior);
+    // Rest-measured gyro bias (LocalMapping::SetRestGyroBiasPrior) replaces the prior towards zero.
+    EdgePriorGyro* epg = new EdgePriorGyro(pGyroPrior ? *pGyroPrior : bprior);
     epg->setVertex(0,dynamic_cast<g2o::OptimizableGraph::Vertex*>(VG));
-    double infoPriorG = priorG;
+    double infoPriorG = pGyroPrior ? std::max<double>(priorG, gyroPriorInfo) : priorG;
     epg->setInformation(infoPriorG*Eigen::Matrix3d::Identity());
     optimizer.addEdge(epg);
 
     // Gravity and scale
     VertexGDir* VGDir = new VertexGDir(Rwg);
     VGDir->setId(maxKFid*2+4);
-    VGDir->setFixed(false);
+    // bFixGravity: gravity direction measured by the flight controller (LocalMapping gravity reference), not estimated.
+    VGDir->setFixed(bFixGravity);
     optimizer.addVertex(VGDir);
     VertexScale* VS = new VertexScale(scale);
     VS->setId(maxKFid*2+5);
@@ -4913,6 +5008,19 @@ int Optimizer::PoseInertialOptimizationLastKeyFrame(Frame *pFrame, bool bRecInit
         epv->setInformation(Eigen::Matrix3d::Identity() * 1e4);
         optimizer.addEdge(epv);
     }
+    // WP B2 rest observations (IMU.RestObs.*): gyro bias and gravity direction at strong rest.
+    if(pFrame->mbRestObs)
+    {
+        EdgePriorGyro* erg = new EdgePriorGyro(pFrame->mRestGyro);
+        erg->setVertex(0,VG);
+        erg->setInformation(pFrame->mRestInfoG * Eigen::Matrix3d::Identity());
+        optimizer.addEdge(erg);
+        EdgeRestGravity* era = new EdgeRestGravity(pFrame->mRestAcc);
+        era->setVertex(0,VP);
+        era->setVertex(1,VA);
+        era->setInformation(pFrame->mRestInfoA * Eigen::Matrix3d::Identity());
+        optimizer.addEdge(era);
+    }
 
     // We perform 4 optimizations, after each optimization we classify observation as inlier/outlier
     // At the next optimization, outliers are not included, but at the end they can be classified as inliers again.
@@ -5312,6 +5420,19 @@ int Optimizer::PoseInertialOptimizationLastFrame(Frame *pFrame, bool bRecInit)
         epv->setMeasurement(Eigen::Vector3d::Zero());
         epv->setInformation(Eigen::Matrix3d::Identity() * 1e4);
         optimizer.addEdge(epv);
+    }
+    // WP B2 rest observations (IMU.RestObs.*): gyro bias and gravity direction at strong rest.
+    if(pFrame->mbRestObs)
+    {
+        EdgePriorGyro* erg = new EdgePriorGyro(pFrame->mRestGyro);
+        erg->setVertex(0,VG);
+        erg->setInformation(pFrame->mRestInfoG * Eigen::Matrix3d::Identity());
+        optimizer.addEdge(erg);
+        EdgeRestGravity* era = new EdgeRestGravity(pFrame->mRestAcc);
+        era->setVertex(0,VP);
+        era->setVertex(1,VA);
+        era->setInformation(pFrame->mRestInfoA * Eigen::Matrix3d::Identity());
+        optimizer.addEdge(era);
     }
 
     if (!pFp->mpcpi)

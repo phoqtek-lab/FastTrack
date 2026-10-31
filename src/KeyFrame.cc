@@ -117,6 +117,8 @@ KeyFrame::KeyFrame(Frame &F, Map *pMap, KeyFrameDatabase *pKFDB):
     mvLeftToRightMatch(F.mvLeftToRightMatch),mvRightToLeftMatch(F.mvRightToLeftMatch), mTlr(F.GetRelativePoseTlr()),
     mvKeysRight(F.mvKeysRight), NLeft(F.Nleft), NRight(F.Nright), mTrl(F.GetRelativePoseTrl()), mnNumberOfOpt(0), mbHasVelocity(false)
 {
+    mbRestObs = F.mbRestObs; mRestGyro = F.mRestGyro; mRestAcc = F.mRestAcc;
+    mRestInfoG = F.mRestInfoG; mRestInfoA = F.mRestInfoA;
     FT_CALC_SCOPE();
     mnId=nNextId++;
     FT_CALC_LOG("keyframe.construct id=%llu frame=%llu map=%llu features=%d imu=%d",
@@ -1240,6 +1242,11 @@ void KeyFrame::PostLoad(map<long unsigned int, KeyFrame*>& mpKFid, map<long unsi
     if(mnBackupIdCamera2 >= 0)
     {
         mpCamera2 = mpCamId[mnBackupIdCamera2];
+    }
+    else
+    {
+        // The default constructor used by deserialization leaves mpCamera2 indeterminate (monocular keyframes).
+        mpCamera2 = static_cast<GeometricCamera*>(NULL);
     }
 
     //Inertial data

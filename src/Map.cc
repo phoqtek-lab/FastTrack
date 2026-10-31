@@ -399,7 +399,10 @@ void Map::PreSave(std::set<GeometricCamera*> &spCams)
     unique_lock<mutex> updateLock(mMutexMapUpdate);
     unique_lock<mutex> treeLock(KeyFrame::SpanningTreeMutex());
     int nMPWithoutObs = 0;
-    for(MapPoint* pMPi : mspMapPoints)
+    // EraseObservation can SetBadFlag -> EraseMapPoint, which erases from mspMapPoints: iterate snapshots
+    // (as upstream ORB-SLAM3 does). Iterating the live set crashed intermittently on save.
+    const std::vector<MapPoint*> vMapPointsSnapshot1(mspMapPoints.begin(), mspMapPoints.end());
+    for(MapPoint* pMPi : vMapPointsSnapshot1)
     {
         if(!pMPi || pMPi->isBad())
             continue;
@@ -430,7 +433,8 @@ void Map::PreSave(std::set<GeometricCamera*> &spCams)
 
     // Backup of MapPoints
     mvpBackupMapPoints.clear();
-    for(MapPoint* pMPi : mspMapPoints)
+    const std::vector<MapPoint*> vMapPointsSnapshot2(mspMapPoints.begin(), mspMapPoints.end());
+    for(MapPoint* pMPi : vMapPointsSnapshot2)
     {
         if(!pMPi || pMPi->isBad())
             continue;
@@ -441,7 +445,8 @@ void Map::PreSave(std::set<GeometricCamera*> &spCams)
 
     // Backup of KeyFrames
     mvpBackupKeyFrames.clear();
-    for(KeyFrame* pKFi : mspKeyFrames)
+    const std::vector<KeyFrame*> vKeyFramesSnapshot(mspKeyFrames.begin(), mspKeyFrames.end());
+    for(KeyFrame* pKFi : vKeyFramesSnapshot)
     {
         if(!pKFi || pKFi->isBad())
             continue;

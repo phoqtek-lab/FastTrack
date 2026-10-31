@@ -100,6 +100,11 @@ namespace ORB_SLAM3
 
         float mfNNratio;
         bool mbCheckOrientation;
+    public:
+        // Mutual (cross-check) best match in SearchByBoW(KeyFrame*, Frame&, ...): the frame feature's nearest keyframe
+        // feature in the same vocabulary node must be the one that chose it (2026-10-23, relocalization research).
+        bool mbMutualCheck = false;
+        int mnMutualRejected = 0;
     };
 
 }// namespace ORB_SLAM

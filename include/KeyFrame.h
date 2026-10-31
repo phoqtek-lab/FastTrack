@@ -349,6 +349,21 @@ public:
     void SetKeyFrameDatabase(KeyFrameDatabase* pKFDB);
 
     bool bImu;
+    // WP B2 rest observation copied from the frame (not serialized).
+    bool mbRestObs = false;
+    Eigen::Vector3f mRestGyro = Eigen::Vector3f::Zero();
+    Eigen::Vector3f mRestAcc = Eigen::Vector3f::Zero();
+    double mRestInfoG = 0.0;
+    double mRestInfoA = 0.0;
+    // Init profile: accelerometer-bias prior (m/s^2) for the local inertial BA, information 1/sigma^2.
+    bool mbAccPrior = false;
+    Eigen::Vector3f mAccPrior = Eigen::Vector3f::Zero();
+    double mAccPriorInfo = 0.0;
+    // C4 (2026-10-31): baro target for the world vertical velocity (metric maps), information 1/sigma^2.
+    bool mbBaroVzObs = false;
+    double mBaroVz = 0.0;
+    double mBaroVzInfo = 0.0;
+    bool mbC6FullTail = false;  // C6 (2026-10-31): full-weight tail inertial link in the local inertial BA
 
     // The following variables are accesed from only 1 thread or never change (no mutex needed).
 public:

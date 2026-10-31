@@ -39,6 +39,13 @@
 #include <cstdlib> // For std::exit
 #include "Kernels/KernelController.h"
 #include "CalculationLogger.h"
+#include <cerrno>
+#include <chrono>
+#include <cstring>
+#include <ctime>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
 
 namespace ORB_SLAM3
 {
@@ -57,6 +64,12 @@ Verbose::eLevel Verbose::th = Verbose::VERBOSITY_NORMAL;
 
 System::System(const string &strVocFile, const string &strSettingsFile, const eSensor sensor,
                const bool bUseViewer, const int initFr, const string &strSequence):
+    System(strVocFile, strSettingsFile, sensor, PriorMapOptions(), bUseViewer, initFr, strSequence)
+{
+}
+
+System::System(const string &strVocFile, const string &strSettingsFile, const eSensor sensor,
+               const PriorMapOptions &prior, const bool bUseViewer, const int initFr, const string &strSequence):
     mSensor(sensor), mpVocabulary(nullptr), mpKeyFrameDatabase(nullptr), mpAtlas(nullptr),
     mpTracker(nullptr), mpLocalMapper(nullptr), mpLoopCloser(nullptr), mpViewer(nullptr),
     mpFrameDrawer(nullptr), mpMapDrawer(nullptr), mptLocalMapping(nullptr),
@@ -66,6 +79,8 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
 {
     CalculationLog::initialize();
     FT_CALC_SCOPE();
+    mPriorOpt = prior;
+    mbResetToPriorMap = false;
 
     // std::signal(SIGINT, signalHandler);
 
@@ -123,6 +138,16 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
 
     bool loadedAtlas = false;
 
+    // Prior-map start: the options name the file; the legacy settings key is ignored then.
+    const bool bPriorLoad = mPriorOpt.enable && !mPriorOpt.load_path.empty();
+    PriorMapStatus priorLoad;
+    bool bPriorLoaded = false;
+    if(bPriorLoad && !mStrLoadAtlasFromFile.empty())
+    {
+        FT_CALC_LOG("system.prior_map.ignore_settings_load path=%s", mStrLoadAtlasFromFile.c_str());
+        mStrLoadAtlasFromFile.clear();
+    }
+
     if(mStrLoadAtlasFromFile.empty())
     {
         //Load ORB Vocabulary
@@ -143,6 +168,20 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
         //Create the Atlas
         FT_CALC_LOG("system.atlas.initialize mode=new");
         mpAtlas = new Atlas(0);
+
+        if(bPriorLoad)
+        {
+            const auto tLoad0 = std::chrono::steady_clock::now();
+            bPriorLoaded = LoadAtlasFile(mPriorOpt.load_path, priorLoad);
+            const double loadS = std::chrono::duration<double>(std::chrono::steady_clock::now() - tLoad0).count();
+            FT_CALC_LOG("system.prior_map.load ok=%d seconds=%f reason=%s", bPriorLoaded ? 1 : 0, loadS, priorLoad.reason.c_str());
+            if(!bPriorLoaded)
+            {
+                // Normal start. The partially filled database (if any) is replaced.
+                mpKeyFrameDatabase = new KeyFrameDatabase(*mpVocabulary);
+                mpAtlas = new Atlas(0);
+            }
+        }
     }
     else
     {
@@ -200,8 +239,11 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
     //(it will live in the main thread of execution, the one that called this constructor)
     FT_CALC_LOG("system.sequence name=%s", strSequence.c_str());
     
+    Tracking::sbInstallSigintHandler = !mPriorOpt.keep_host_sigint;
     mpTracker = new Tracking(this, mpVocabulary, mpFrameDrawer, mpMapDrawer,
                              mpAtlas, mpKeyFrameDatabase, strSettingsFile, mSensor, settings_, strSequence);
+    // Before the mapping threads exist: choose / validate the prior map against this session's calibration.
+    mpTracker->ConfigurePriorMap(mPriorOpt, priorLoad, bPriorLoaded);
 
     //Initialize the Local Mapping thread and launch
     mpLocalMapper = new LocalMapping(this, mpAtlas, mSensor==MONOCULAR || mSensor==IMU_MONOCULAR,
@@ -485,6 +527,19 @@ Sophus::SE3f System::TrackMonocular(const cv::Mat &im, const double &timestamp, 
             mpTracker->ResetActiveMap();
             mbResetActiveMap = false;
         }
+        if(mbResetToPriorMap)
+        {
+            mbResetToPriorMap = false;
+            std::string why;
+            if(mpTracker->ResetToPriorMap(why))
+                FT_CALC_LOG("system.track.monocular.reset_to_prior_map ok=1 detail=%s", why.c_str());
+            else
+            {
+                // A ground reset must complete: without a usable prior map (or if keeping it fails) reset everything.
+                FT_CALC_LOG("system.track.monocular.reset_to_prior_map ok=0 reason=%s action=full_reset", why.c_str());
+                mpTracker->Reset();
+            }
+        }
     }
 
     if (mSensor == System::IMU_MONOCULAR)
@@ -509,6 +564,78 @@ Sophus::SE3f System::TrackMonocular(const cv::Mat &im, const double &timestamp, 
 void System::SetExternalReference(const bool bHasYaw, const double yawDeg, const bool bHasAlt, const double altM)
 {
     mpTracker->SetExternalReference(bHasYaw, yawDeg, bHasAlt, altM);
+}
+
+void System::AddAltitudeReference(double t, double h)
+{
+    if(mpTracker)
+        mpTracker->AddAltitudeReference(t, h);
+}
+
+void System::AddGravityReference(double t, const Eigen::Matrix3f &Rwb)
+{
+    if(mpLocalMapper)
+        mpLocalMapper->AddGravityReference(t, Rwb);
+}
+
+void System::SetGravityFromReference(bool b)
+{
+    if(mpLocalMapper)
+        mpLocalMapper->SetGravityFromReference(b);
+}
+
+void System::SetRestGyroBiasPrior(const Eigen::Vector3f &bg, const float sigma)
+{
+    mpLocalMapper->SetRestGyroBiasPrior(bg, sigma);
+}
+
+void System::ClearRestGyroBiasPrior()
+{
+    mpLocalMapper->ClearRestGyroBiasPrior();
+}
+
+void System::SetAccBiasPrior(const Eigen::Vector3f &ba, const float sigma)
+{
+    mpLocalMapper->SetAccBiasPrior(ba, sigma);
+}
+
+void System::ClearAccBiasPrior()
+{
+    mpLocalMapper->ClearAccBiasPrior();
+}
+
+void System::SetPoseOptimizationMode(int mode)
+{
+    mpTracker->SetPoseOptimizationMode(mode);
+}
+
+void System::SetPoseOptimizationTurn(double rate_dps, double hold_s)
+{
+    mpTracker->SetPoseOptimizationTurn(rate_dps, hold_s);
+}
+
+bool System::GetBaroScaleObservation(double &t, double &h, double &d, double &s, double &z, double &tilt, int &nI,
+                                     int &nP, unsigned long &mapId, unsigned long &seq)
+{
+    LocalMapping::BaroScaleObs o;
+    if (!mpLocalMapper->GetBaroScaleObs(o))
+        return false;
+    t = o.t; h = o.h; d = o.d; s = o.s; z = o.z; tilt = o.tilt; nI = o.nI; nP = o.nP; mapId = o.mapId; seq = o.seq;
+    return true;
+}
+
+bool System::GetInitProfileState(Eigen::Vector3f &ba, Eigen::Vector3f &bg, int &nKF)
+{
+    Map* pMap = mpAtlas->GetCurrentMap();
+    if (!pMap || !pMap->isImuInitialized() || !pMap->GetIniertialBA2())
+        return false;
+    KeyFrame* pKF = mpTracker->GetLastKeyFrame();
+    if (!pKF || pKF->isBad() || pKF->GetMap() != pMap)
+        return false;
+    ba = pKF->GetAccBias();
+    bg = pKF->GetGyroBias();
+    nKF = static_cast<int>(pMap->KeyFramesInMap());
+    return ba.allFinite() && bg.allFinite();
 }
 
 void System::ActivateLocalizationMode()
@@ -548,6 +675,71 @@ void System::ResetActiveMap()
     mbResetActiveMap = true;
 }
 
+void System::ResetToPriorMap()
+{
+    unique_lock<mutex> lock(mMutexReset);
+    mbResetToPriorMap = true;
+}
+
+void System::AllowTimeGapOnce(double gapS)
+{
+    if(mpTracker)
+        mpTracker->AllowTimeGapOnce(gapS);
+}
+
+bool System::HasUsablePriorMap()
+{
+    return mpTracker && mpTracker->HasUsablePriorMap();
+}
+
+PriorMapStatus System::GetPriorMapStatus()
+{
+    if(!mpTracker)
+        return PriorMapStatus();
+    return mpTracker->GetPriorMapStatus();
+}
+
+SaveMapResult System::SaveMap(const std::string &pathIn)
+{
+    FT_CALC_SCOPE();
+    SaveMapResult r;
+    r.path = pathIn.empty() ? mPriorOpt.save_path : pathIn;
+    if(r.path.empty())
+        r.reason = "no save path (prior_map save_path empty)";
+    else if(isShutDown())
+        r.reason = "system shut down";
+    else
+    {
+        Map* pActive = mpAtlas->GetCurrentMap();
+        if(!pActive || !pActive->isImuInitialized() || !pActive->GetIniertialBA2())
+            r.reason = "active map is not inertially initialized (IMU init + VIBA2)";
+        else if(static_cast<int>(pActive->KeyFramesInMap()) < mPriorOpt.min_keyframes)
+            r.reason = "active map has " + std::to_string(pActive->KeyFramesInMap()) + " keyframes, minimum " +
+                       std::to_string(mPriorOpt.min_keyframes);
+    }
+    if(!r.reason.empty())
+    {
+        FT_CALC_LOG("system.save_map.refused reason=%s", r.reason.c_str());
+        mpTracker->NotePriorSave(r);
+        return r;
+    }
+    std::string why;
+    if(!mpTracker->StopMappingThreads(false, mPriorOpt.gba_wait_s, why))
+    {
+        r.reason = why;
+        FT_CALC_LOG("system.save_map.refused reason=%s", r.reason.c_str());
+        mpTracker->NotePriorSave(r);
+        return r;
+    }
+    const std::string path = r.path;
+    r = WriteAtlasFile(path);
+    mpTracker->ReleaseMappingThreads();
+    if(r.ok)
+        mpTracker->AdoptActiveMapAsPrior(r);
+    mpTracker->NotePriorSave(r);
+    return r;
+}
+
 void System::Shutdown()
 {
     {
@@ -585,6 +777,14 @@ void System::Shutdown()
     FT_CALC_LOG("system.shutdown.workers_stopped");
 
     KernelController::shutdownKernels();
+
+    if(mPriorOpt.save_on_shutdown && !mPriorOpt.save_path.empty())
+    {
+        const SaveMapResult r = WriteAtlasFile(mPriorOpt.save_path);
+        FT_CALC_LOG("system.shutdown.save_map ok=%d path=%s reason=%s", r.ok ? 1 : 0, r.path.c_str(), r.reason.c_str());
+        std::fprintf(stderr, "[prior_map] shutdown save %s: %s (%llu bytes) %s\n", r.ok ? "ok" : "FAILED", r.path.c_str(),
+                     static_cast<unsigned long long>(r.bytes), r.reason.c_str());
+    }
 
     if(!mStrSaveAtlasToFile.empty())
     {
@@ -1537,13 +1737,8 @@ void System::SaveAtlas(int type){
         else if(type == BINARY_FILE) // File binary
         {
             FT_CALC_LOG("system.atlas.save.file type=binary path=%s", pathSaveFileName.c_str());
-            std::remove(pathSaveFileName.c_str());
-            std::ofstream ofs(pathSaveFileName, std::ios::binary);
-            boost::archive::binary_oarchive oa(ofs);
-            oa << strVocabularyName;
-            oa << strVocabularyChecksum;
-            oa << mpAtlas;
-            FT_CALC_LOG("system.atlas.save.file_complete type=binary");
+            const SaveMapResult r = WriteAtlasFile(pathSaveFileName);  // PreSave again: idempotent
+            FT_CALC_LOG("system.atlas.save.file_complete type=binary ok=%d reason=%s", r.ok ? 1 : 0, r.reason.c_str());
         }
     }
 }
@@ -1610,6 +1805,252 @@ bool System::LoadAtlas(int type)
         return true;
     }
     return false;
+}
+
+namespace
+{
+bool FsyncPath(const std::string &path, bool bDirectory)
+{
+    const int fd = ::open(path.c_str(), bDirectory ? (O_RDONLY | O_DIRECTORY) : O_RDONLY);
+    if(fd < 0)
+        return false;
+    const bool ok = ::fsync(fd) == 0;
+    ::close(fd);
+    return ok;
+}
+
+std::string DirName(const std::string &path)
+{
+    const std::size_t p = path.find_last_of('/');
+    if(p == std::string::npos)
+        return ".";
+    if(p == 0)
+        return "/";
+    return path.substr(0, p);
+}
+
+// Value of "key":"..." in a small flat JSON object written by WriteAtlasFile.
+std::string JsonString(const std::string &json, const std::string &key)
+{
+    const std::string k = "\"" + key + "\":\"";
+    const std::size_t a = json.find(k);
+    if(a == std::string::npos)
+        return "";
+    const std::size_t b = json.find('"', a + k.size());
+    if(b == std::string::npos)
+        return "";
+    return json.substr(a + k.size(), b - a - k.size());
+}
+}  // namespace
+
+bool System::LoadAtlasFile(const std::string &path, PriorMapStatus &st)
+{
+    FT_CALC_SCOPE();
+    st = PriorMapStatus();
+    st.state = PriorMapStatus::kLoadFailed;
+    st.path = path;
+    struct stat sb;
+    if(::stat(path.c_str(), &sb) != 0 || !S_ISREG(sb.st_mode))
+    {
+        st.reason = "file not found: " + path;
+        return false;
+    }
+    st.file_bytes = static_cast<uint64_t>(sb.st_size);
+    if(sb.st_size <= 0)
+    {
+        st.reason = "file is empty: " + path;
+        return false;
+    }
+    if(static_cast<double>(sb.st_size) > mPriorOpt.max_file_mb * 1024.0 * 1024.0)
+    {
+        char b[200];
+        std::snprintf(b, sizeof(b), "file is %.1f MB, limit %.1f MB", sb.st_size / 1048576.0, mPriorOpt.max_file_mb);
+        st.reason = b;
+        return false;
+    }
+    st.file_md5 = CalculateCheckSum(path, BINARY_FILE);
+    {
+        std::ifstream js(path + ".json");
+        if(js.good())
+        {
+            const std::string json((std::istreambuf_iterator<char>(js)), std::istreambuf_iterator<char>());
+            const std::string md5 = JsonString(json, "md5");
+            if(!md5.empty() && md5 != st.file_md5)
+            {
+                st.reason = "file md5 " + st.file_md5 + " does not match its sidecar (" + md5 + "): corrupt or replaced";
+                return false;
+            }
+        }
+    }
+    Atlas* pLoaded = nullptr;
+    try
+    {
+        std::ifstream ifs(path, std::ios::binary);
+        if(!ifs.good())
+        {
+            st.reason = "cannot open: " + path;
+            return false;
+        }
+        boost::archive::binary_iarchive ia(ifs);
+        string strFileVoc, strVocChecksum;
+        ia >> strFileVoc;
+        ia >> strVocChecksum;
+        const string strInputVocabularyChecksum = CalculateCheckSum(mStrVocabularyFilePath, TEXT_FILE);
+        if(strInputVocabularyChecksum.empty() || strInputVocabularyChecksum != strVocChecksum)
+        {
+            st.reason = "vocabulary differs from the one the map was built with (" + strFileVoc + ")";
+            return false;
+        }
+        ia >> pLoaded;
+    }
+    catch(const std::exception &e)
+    {
+        st.reason = std::string("cannot deserialize: ") + e.what();
+        return false;
+    }
+    if(!pLoaded)
+    {
+        st.reason = "no atlas in the file";
+        return false;
+    }
+    try
+    {
+        pLoaded->SetKeyFrameDababase(mpKeyFrameDatabase);
+        pLoaded->SetORBVocabulary(mpVocabulary);
+        pLoaded->PostLoad();
+    }
+    catch(const std::exception &e)
+    {
+        st.reason = std::string("post-load failed: ") + e.what();
+        return false;
+    }
+    // The deserialized atlas has no current map; one is needed before SetInertialSensor and the tracker.
+    Map* pLargest = nullptr;
+    for(Map* pMi : pLoaded->GetAllMaps())
+        if(pMi && (!pLargest || pMi->KeyFramesInMap() > pLargest->KeyFramesInMap()))
+            pLargest = pMi;
+    if(!pLargest)
+    {
+        st.reason = "the file holds no map";
+        return false;
+    }
+    pLoaded->ChangeMap(pLargest);
+    mpAtlas = pLoaded;  // the empty Atlas(0) created before is not used
+    st.reason = "loaded";
+    return true;
+}
+
+SaveMapResult System::WriteAtlasFile(const std::string &path)
+{
+    FT_CALC_SCOPE();
+    SaveMapResult r;
+    r.path = path;
+    const auto t0 = std::chrono::steady_clock::now();
+    {
+        struct statvfs vfs;
+        if(::statvfs(DirName(path).c_str(), &vfs) == 0)
+        {
+            const double freeMb = static_cast<double>(vfs.f_bavail) * vfs.f_frsize / 1048576.0;
+            if(freeMb < 256.0)
+            {
+                char b[160];
+                std::snprintf(b, sizeof(b), "only %.0f MB free in %s", freeMb, DirName(path).c_str());
+                r.reason = b;
+                return r;
+            }
+        }
+        else
+        {
+            r.reason = "directory not accessible: " + DirName(path) + " (" + std::strerror(errno) + ")";
+            return r;
+        }
+    }
+
+    mpAtlas->PreSave();
+    for(Map* pMi : mpAtlas->GetAllMaps())
+    {
+        if(!pMi || pMi->IsBad())
+            continue;
+        r.maps++;
+        r.keyframes += pMi->KeyFramesInMap();
+        r.map_points += pMi->MapPointsInMap();
+    }
+
+    const string strVocabularyChecksum = CalculateCheckSum(mStrVocabularyFilePath, TEXT_FILE);
+    const std::size_t found = mStrVocabularyFilePath.find_last_of("/\\");
+    const string strVocabularyName = mStrVocabularyFilePath.substr(found + 1);
+    const std::string tmp = path + ".tmp." + std::to_string(::getpid());
+    try
+    {
+        std::ofstream ofs(tmp, std::ios::binary | std::ios::trunc);
+        if(!ofs.good())
+        {
+            r.reason = "cannot create " + tmp + " (" + std::strerror(errno) + ")";
+            return r;
+        }
+        {
+            boost::archive::binary_oarchive oa(ofs);
+            oa << strVocabularyName;
+            oa << strVocabularyChecksum;
+            oa << mpAtlas;
+        }
+        ofs.flush();
+        if(!ofs.good())
+        {
+            ofs.close();
+            std::remove(tmp.c_str());
+            r.reason = "write error on " + tmp;
+            return r;
+        }
+        ofs.close();
+    }
+    catch(const std::exception &e)
+    {
+        std::remove(tmp.c_str());
+        r.reason = std::string("serialization failed: ") + e.what();
+        return r;
+    }
+    if(!FsyncPath(tmp, false) || std::rename(tmp.c_str(), path.c_str()) != 0)
+    {
+        r.reason = "cannot commit " + path + " (" + std::strerror(errno) + ")";
+        std::remove(tmp.c_str());
+        return r;
+    }
+    FsyncPath(DirName(path), true);
+
+    struct stat sb;
+    if(::stat(path.c_str(), &sb) == 0)
+        r.bytes = static_cast<uint64_t>(sb.st_size);
+    r.md5 = CalculateCheckSum(path, BINARY_FILE);
+
+    // Sidecar: identity and content summary (LoadAtlasFile checks the md5).
+    char tbuf[32];
+    const std::time_t now = std::time(nullptr);
+    std::strftime(tbuf, sizeof(tbuf), "%Y-%m-%dT%H:%M:%SZ", std::gmtime(&now));
+    char json[1024];
+    std::snprintf(json, sizeof(json),
+                  "{\"format\":\"fasttrack-atlas-binary\",\"file\":\"%s\",\"md5\":\"%s\",\"bytes\":%llu,\"created_utc\":\"%s\","
+                  "\"vocabulary\":\"%s\",\"vocabulary_md5\":\"%s\",\"maps\":%lu,\"keyframes\":%lu,\"map_points\":%lu,"
+                  "\"active_map\":%lu}\n",
+                  path.c_str(), r.md5.c_str(), static_cast<unsigned long long>(r.bytes), tbuf, strVocabularyName.c_str(),
+                  strVocabularyChecksum.c_str(), r.maps, r.keyframes, r.map_points,
+                  static_cast<unsigned long>(mpAtlas->GetCurrentMap() ? mpAtlas->GetCurrentMap()->GetId() : 0));
+    const std::string jtmp = path + ".json.tmp." + std::to_string(::getpid());
+    {
+        std::ofstream js(jtmp, std::ios::trunc);
+        js << json;
+    }
+    if(!FsyncPath(jtmp, false) || std::rename(jtmp.c_str(), (path + ".json").c_str()) != 0)
+    {
+        std::remove(jtmp.c_str());
+        r.reason = "map saved, sidecar not written (" + std::string(std::strerror(errno)) + ")";
+    }
+    r.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    r.ok = true;
+    FT_CALC_LOG("system.save_map.ok path=%s bytes=%llu md5=%s maps=%lu keyframes=%lu points=%lu seconds=%f",
+                path.c_str(), static_cast<unsigned long long>(r.bytes), r.md5.c_str(), r.maps, r.keyframes, r.map_points,
+                r.seconds);
+    return r;
 }
 
 string System::CalculateCheckSum(string filename, int type)

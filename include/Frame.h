@@ -112,6 +112,10 @@ public:
     // Compute the cell of a keypoint (return false if outside the grid)
     bool PosInGrid(const cv::KeyPoint &kp, int &posX, int &posY);
 
+    // C1b (2026-10-31): append one monocular observation (KLT-tracked map point); keeps all per-keypoint arrays and
+    // the grid consistent. Returns false (nothing changed) for stereo/fisheye-pair frames or inconsistent sizes.
+    bool AppendObservation(const cv::KeyPoint &kp, const cv::KeyPoint &kpUn, const cv::Mat &desc, MapPoint* pMP);
+
     vector<size_t> GetFeaturesInArea(const float &x, const float  &y, const float  &r, const int minLevel=-1, const int maxLevel=-1, const bool bRight = false) const;
 
     // Search a match for each keypoint in the left image to a keypoint in the right image.
@@ -136,6 +140,17 @@ public:
     // Zero Velocity Update (ZUPT) support: marks the frame as stationary.
     void SetStationary(bool b);
     bool IsStationary() const;
+    // Strong rest: IMU stillness far below anything measured in flight (see Tracking::UpdateZuptState).
+    void SetStrongRest(bool b) { mbIsStrongRest = b; }
+    bool IsStrongRest() const { return mbIsStrongRest; }
+    // WP B2 rest observation (IMU.RestObs.*): mean gyro / accel of the strong-rest IMU window and their information.
+    void SetRestObs(bool b, const Eigen::Vector3f &g, const Eigen::Vector3f &a, double infoG, double infoA)
+    { mbRestObs = b; mRestGyro = g; mRestAcc = a; mRestInfoG = infoG; mRestInfoA = infoA; }
+    bool mbRestObs = false;
+    Eigen::Vector3f mRestGyro = Eigen::Vector3f::Zero();
+    Eigen::Vector3f mRestAcc = Eigen::Vector3f::Zero();
+    double mRestInfoG = 0.0;
+    double mRestInfoA = 0.0;
 
     // Computes rotation, translation and camera center matrices from the camera pose.
     void UpdatePoseMatrices();
@@ -300,6 +315,7 @@ public:
     static float mnMaxY;
 
     static bool mbInitialComputations;
+    static float msMaxKeypointRadius;  // B6 research: Features.MaxRadiusPx (0 = off)
 
     map<long unsigned int, cv::Point2f> mmProjectPoints;
     map<long unsigned int, cv::Point2f> mmMatchedInImage;
@@ -331,6 +347,7 @@ private:
     bool mbImuPreintegrated;
 
     bool mbIsStationary;
+    bool mbIsStrongRest = false;
 
     std::mutex *mpMutexImu;
 
