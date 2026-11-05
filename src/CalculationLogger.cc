@@ -50,6 +50,11 @@ void initialize()
   }
 
   const std::string path = configuredLogPath();
+  // FASTTRACK_CALCULATION_LOG=off (or 0/none): no calculation log at all (2026-10-22: the always-on log grew by
+  // gigabytes per session and filled the disk). The FT_CALC_* macros then cost one flag test.
+  if (path == "off" || path == "0" || path == "none") {
+    return;
+  }
   try {
     // The order is deliberate: no producer can observe enabled until the
     // output file, thread-local staging storage, and DEBUG level are ready.

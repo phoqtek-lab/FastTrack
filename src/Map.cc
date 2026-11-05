@@ -225,12 +225,14 @@ void Map::SetStoredMap()
 
 void Map::clear()
 {
+    unique_lock<mutex> updateLock(mMutexMapUpdate);
 //    for(set<MapPoint*>::iterator sit=mspMapPoints.begin(), send=mspMapPoints.end(); sit!=send; sit++)
 //        delete *sit;
 
     for(set<KeyFrame*>::iterator sit=mspKeyFrames.begin(), send=mspKeyFrames.end(); sit!=send; sit++)
     {
         KeyFrame* pKF = *sit;
+        pKF->DetachTreeRelations();
         pKF->UpdateMap(static_cast<Map*>(NULL));
 //        delete *sit;
     }
@@ -297,8 +299,25 @@ void Map::ApplyScaledRotation(const Sophus::SE3f &T, const float s, const bool b
         pMP->UpdateNormalAndDepth();
     }
     mnMapChange++;
-    FT_CALC_LOG("map.scale_rotation.end map_id=%llu change=%d",
-                static_cast<unsigned long long>(mnId), mnMapChange);
+    {
+        FrameTransform ft;
+        ft.epoch = mnFrameEpoch.load() + 1;
+        ft.s = s;
+        ft.q = Eigen::Quaternionf(Ryw).normalized();
+        ft.t = tyw;
+        mFrameTransforms.push_back(ft);
+        while(mFrameTransforms.size() > kFrameTransformHistory)
+            mFrameTransforms.pop_front();
+        mnFrameEpoch.store(ft.epoch);  // published after the history entry exists
+    }
+    FT_CALC_LOG("map.scale_rotation.end map_id=%llu change=%d frame_epoch=%lu",
+                static_cast<unsigned long long>(mnId), mnMapChange, mnFrameEpoch.load());
+}
+
+std::vector<Map::FrameTransform> Map::GetFrameTransforms()
+{
+    unique_lock<mutex> lock(mMutexMap);
+    return std::vector<FrameTransform>(mFrameTransforms.begin(), mFrameTransforms.end());
 }
 
 void Map::SetInertialSensor()
@@ -377,8 +396,13 @@ void Map::SetLastMapChange(int currentChangeId)
 
 void Map::PreSave(std::set<GeometricCamera*> &spCams)
 {
+    unique_lock<mutex> updateLock(mMutexMapUpdate);
+    unique_lock<mutex> treeLock(KeyFrame::SpanningTreeMutex());
     int nMPWithoutObs = 0;
-    for(MapPoint* pMPi : mspMapPoints)
+    // EraseObservation can SetBadFlag -> EraseMapPoint, which erases from mspMapPoints: iterate snapshots
+    // (as upstream ORB-SLAM3 does). Iterating the live set crashed intermittently on save.
+    const std::vector<MapPoint*> vMapPointsSnapshot1(mspMapPoints.begin(), mspMapPoints.end());
+    for(MapPoint* pMPi : vMapPointsSnapshot1)
     {
         if(!pMPi || pMPi->isBad())
             continue;
@@ -409,7 +433,8 @@ void Map::PreSave(std::set<GeometricCamera*> &spCams)
 
     // Backup of MapPoints
     mvpBackupMapPoints.clear();
-    for(MapPoint* pMPi : mspMapPoints)
+    const std::vector<MapPoint*> vMapPointsSnapshot2(mspMapPoints.begin(), mspMapPoints.end());
+    for(MapPoint* pMPi : vMapPointsSnapshot2)
     {
         if(!pMPi || pMPi->isBad())
             continue;
@@ -420,7 +445,8 @@ void Map::PreSave(std::set<GeometricCamera*> &spCams)
 
     // Backup of KeyFrames
     mvpBackupKeyFrames.clear();
-    for(KeyFrame* pKFi : mspKeyFrames)
+    const std::vector<KeyFrame*> vKeyFramesSnapshot(mspKeyFrames.begin(), mspKeyFrames.end());
+    for(KeyFrame* pKFi : vKeyFramesSnapshot)
     {
         if(!pKFi || pKFi->isBad())
             continue;

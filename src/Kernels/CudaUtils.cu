@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "Kernels/CudaUtils.h"
 #include "CalculationLogApi.h"
 
@@ -20,7 +21,15 @@ void checkCudaError(cudaError_t err, const char* msg) {
     if (err != cudaSuccess) {
         ORB_SLAM3::CalculationLog::textf("cuda.error message=%s detail=%s status=%d",
                                          msg, cudaGetErrorString(err), static_cast<int>(err));
-        exit(EXIT_FAILURE);
+        // Also on stderr (the calculation log is binary). A failed allocation at start-up is usually NvMap/CMA
+        // pressure on Jetson (page cache in the CMA region): exit 75 (EX_TEMPFAIL) so the launcher or systemd can
+        // free the page cache and start again; other CUDA errors keep EXIT_FAILURE.
+        std::fprintf(stderr, "FastTrack CUDA error: %s: %s (%d)\n", msg, cudaGetErrorString(err), static_cast<int>(err));
+        const bool oom = err == cudaErrorMemoryAllocation;
+        if (oom)
+            std::fprintf(stderr, "FastTrack: GPU memory allocation failed; free the page cache (tools/prepare_gpu_memory.sh) and restart\n");
+        std::fflush(stderr);
+        exit(oom ? 75 : EXIT_FAILURE);
     }
 }
 

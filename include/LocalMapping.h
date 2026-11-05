@@ -28,6 +28,7 @@
 #include "Settings.h"
 
 #include <mutex>
+#include <deque>
 
 
 namespace ORB_SLAM3
@@ -78,9 +79,76 @@ public:
 
     bool IsInitializing();
     double GetCurrKFTime();
+
+    // Gyro bias measured while the vehicle was verifiably at rest (rad/s; ORB-SLAM3 convention
+    // w_true = w_meas - bg). While set, IMU initialization (InertialOptimization) and the
+    // initialization bundle adjustments (BA1 and BA2) use it as the gyro-bias prior with
+    // information 1/sigma^2, instead of the default weak prior towards zero (none in BA2).
+    // sigma must be > 0. Thread-safe.
+    void SetRestGyroBiasPrior(const Eigen::Vector3f &bg, float sigma);
+    // Gravity reference (2026-10-23): flight-controller attitude R_world_body (world z up, same body frame as the IMU).
+    // When enabled, IMU initialization takes the gravity direction from it instead of estimating it, and keeps it fixed
+    // in the BA1/BA2 refinements.
+    void AddGravityReference(double t, const Eigen::Matrix3f &Rwb);
+    void SetGravityFromReference(bool b) { mbGravityFromRef = b; }
+    bool GravityDirFromReference(const std::vector<KeyFrame*> &vpKF, Eigen::Vector3f &dirG, int &nUsed);
+    std::mutex mMutexGravRef;
+    std::deque<std::pair<double, Eigen::Matrix3f>> mdGravRef;
+    bool mbGravityFromRef = false;
+public:
+    // B3 metric initialization: the map scale came from the barometer; keep it in the inertial initialization.
+    void SetMetricScaleFixed(bool b) { mbMetricScaleFixed = b; }
+    bool mbMetricScaleFixed = false;
+    double mMetricC = 0.0;
+    // B7 research: recent accepted B4 scale observations of the current map, count since the last step, total applied.
+    std::deque<double> mCruiseObs; int mCruiseSince = 0; double mCruiseTotal = 1.0; Map* mpCruiseMap = nullptr;
+    void CruiseScaleStep(double s, double h, double tilt);
+    // C7 (2026-10-31): in-flight accelerometer-bias observer (see LocalMapping.cc)
+    void AccBiasObserverStep(float vzPre);
+    void VertKFInject();  // C7c
+    // C8 (2026-10-31): in-flight map tilt correction
+    void TiltCorrStep(double h);
+    std::deque<Eigen::Vector3f> mTiltObs;
+    int mTiltSince = 0;
+    double mTiltTotal = 0.0;
+    Map* mpTiltMap = nullptr;
+    double mTiltPrevT = -1.0, mTiltTurnT = -1e9;  // C8f v2
+    bool mTiltSnapped = false;  // C8s
+    bool FcRotationAt(double t, Eigen::Matrix3f &Rwb);  // C7c v3: FC attitude (ENU world <- body) nearest t within 0.1 s
+    struct C7State
+    {
+        bool have = false; unsigned long mapId = 0; double t = 0.0, vz = 0.0, vzb = 0.0;
+        std::deque<std::pair<double, double>> e;  // (keyframe time, vertical acceleration error m/s^2)
+        void clear() { have = false; e.clear(); }
+    } mC7;  // m, pad offset c of the last accepted baro scale fit (B4 diagnostic)
+    bool mbMapGravityFromRef = false;
+    void ClearRestGyroBiasPrior();
+    bool GetRestGyroBiasPrior(Eigen::Vector3f &bg, double &info);
+    // Init profile (2026-10-26): accelerometer bias of a saved initialization (m/s^2, IMU body frame). While set, IMU
+    // initialization, BA1/BA2 and the local inertial BA use it as the accelerometer-bias prior (1/sigma^2) instead of
+    // the prior towards zero. Thread-safe.
+    void SetAccBiasPrior(const Eigen::Vector3f &ba, float sigma);
+    void ClearAccBiasPrior();
+    bool GetAccBiasPrior(Eigen::Vector3f &ba, double &info);
+    // F1 (2026-10-27): last barometric scale observation of a keyframe (B4 diagnostic values), for the node's
+    // divergence monitor. seq counts observations; false before the first one. Thread-safe.
+    struct BaroScaleObs { double t = 0, h = 0, d = 0, s = 0, z = 0, tilt = 0; int nI = 0, nP = 0;
+                          unsigned long mapId = 0, seq = 0; };
+    bool GetBaroScaleObs(BaroScaleObs &o);
+    std::mutex mMutexBaroObs;
+    BaroScaleObs mBaroObs;
     KeyFrame* GetCurrKF();
 
     std::mutex mMutexImuInit;
+
+    std::mutex mMutexRestGyroBias;
+    bool mbRestGyroBias = false;
+    Eigen::Vector3f mRestGyroBias = Eigen::Vector3f::Zero();
+    double mRestGyroBiasInfo = 0.0;
+    std::mutex mMutexAccBiasPrior;
+    bool mbAccBiasPrior = false;
+    Eigen::Vector3f mAccBiasPrior = Eigen::Vector3f::Zero();
+    double mAccBiasPriorInfo = 0.0;
 
     Eigen::MatrixXd mcovInertial;
     Eigen::Matrix3d mRwg;
@@ -180,7 +248,12 @@ protected:
     std::mutex mMutexAccept;
 
     void InitializeIMU(float priorG = 1e2, float priorA = 1e6, bool bFirst = false);
-    void ScaleRefinement();
+    void ScaleRefinement(bool baroOnly = false);
+    unsigned long mDeferClimbLog = 0;  // C1 (2026-10-31)
+    long mnNewMpC2 = 0;  // C2 (2026-10-31) log: map points added by the last CreateNewMapPoints
+    float mParMedC3 = -1.f, mParP10C3 = -1.f; bool mbClimbC3 = false;  // C3 (2026-10-31) log
+    double mVzbC4 = 0.0;  // C4 (2026-10-31) log: baro vertical-velocity target of the last keyframe (NaN = none)
+    int mClimbFitTick = 0, mClimbFitLog = 0;  // B5 climb baro scale
 
     bool bInitializing;
 

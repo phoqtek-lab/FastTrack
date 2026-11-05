@@ -31,6 +31,7 @@
 #include <boost/algorithm/string.hpp>
 #include <thread>
 #include <mutex>
+#include <atomic>
 #include "Thirdparty/g2o/g2o/types/types_seven_dof_expmap.h"
 
 namespace ORB_SLAM3
@@ -53,6 +54,14 @@ public:
 public:
 
     LoopClosing(Atlas* pAtlas, KeyFrameDatabase* pDB, ORBVocabulary* pVoc,const bool bFixScale, const bool bActiveLC);
+
+    // Loop-closure event counters (also printed as "[loop_closing]" lines on stderr).
+    struct LcStats {
+        std::atomic<int> bowChecks{0}, bowCandidates{0}, loopCandidates{0}, loopDropped{0}, loopDetected{0},
+            loopRejected{0}, loopCorrected{0}, mergeCandidates{0}, mergeDetected{0}, mergeRejected{0}, merges{0},
+            gbaStarted{0}, gbaCompleted{0}, gbaStopped{0};
+    };
+    LcStats mLcStats;
 
     void SetTracker(Tracking* pTracker);
 

@@ -18,6 +18,7 @@
 
 
 #include "LocalMapping.h"
+#include <iomanip>
 #include "LoopClosing.h"
 #include "ORBmatcher.h"
 #include "Optimizer.h"
@@ -26,6 +27,9 @@
 #include "CalculationLogger.h"
 
 #include<mutex>
+#include <algorithm>
+#include <cmath>
+#include <limits>  // C4 (2026-10-31)
 #include<chrono>
 
 namespace ORB_SLAM3
@@ -103,7 +107,9 @@ void LocalMapping::Run()
 #endif
 
             // Triangulate new MapPoints
+            const size_t nMpBeforeC2 = mpAtlas->GetCurrentMap()->MapPointsInMap();  // C2 (2026-10-31) log
             CreateNewMapPoints();
+            mnNewMpC2 = (long)mpAtlas->GetCurrentMap()->MapPointsInMap() - (long)nMpBeforeC2;
 
             mbAbortBA = false;
 
@@ -133,7 +139,10 @@ void LocalMapping::Run()
 
                     if(mbInertial && mpCurrentKeyFrame->GetMap()->isImuInitialized())
                     {
-                        float dist = (mpCurrentKeyFrame->mPrevKF->GetCameraCenter() - mpCurrentKeyFrame->GetCameraCenter()).norm() +
+                        // A keyframe chain can be shorter than 3 (prior-map start begins a new chain).
+                        float dist = 0.f;
+                        if(mpCurrentKeyFrame->mPrevKF && mpCurrentKeyFrame->mPrevKF->mPrevKF)
+                            dist = (mpCurrentKeyFrame->mPrevKF->GetCameraCenter() - mpCurrentKeyFrame->GetCameraCenter()).norm() +
                                 (mpCurrentKeyFrame->mPrevKF->mPrevKF->GetCameraCenter() - mpCurrentKeyFrame->mPrevKF->GetCameraCenter()).norm();
 
                         if(dist>0.05)
@@ -151,9 +160,82 @@ void LocalMapping::Run()
                             }
                         }
 
+                        // Init profile: accelerometer-bias prior for this keyframe in the local inertial BA.
+                        {
+                            Eigen::Vector3f pba; double pinfo = 0.0;
+                            if(GetAccBiasPrior(pba, pinfo))
+                            { mpCurrentKeyFrame->mbAccPrior = true; mpCurrentKeyFrame->mAccPrior = pba; mpCurrentKeyFrame->mAccPriorInfo = pinfo; }
+                        }
+                        // C6 (2026-10-31): full-weight tail link while climbing.
+                        {
+                            double rC6 = 0.0;
+                            mpCurrentKeyFrame->mbC6FullTail = mpTracker->mbClimbFullTail &&
+                                mpTracker->ClimbRateAbove(mpCurrentKeyFrame->mTimeStamp, mpTracker->mClimbParallaxRate, rC6);
+                        }
+                        // C4 (2026-10-31): baro vertical-velocity target for this keyframe (metric map after BA2).
+                        mVzbC4 = std::numeric_limits<double>::quiet_NaN();
+                        if(mpTracker->mbBaroVz && mbMonocular && mbMetricScaleFixed && mpCurrentKeyFrame->GetMap()->GetIniertialBA2())
+                        {
+                            const double W = mpTracker->mBaroVzWindow; double h1 = 0, h0 = 0, hp = 0;
+                            if(mpTracker->AltitudeAt(mpCurrentKeyFrame->mTimeStamp, h1, hp) && mpTracker->AltitudeAt(mpCurrentKeyFrame->mTimeStamp - W, h0, hp))
+                            {
+                                mpCurrentKeyFrame->mBaroVz = (h1 - h0) / W;
+                                mpCurrentKeyFrame->mBaroVzInfo = 1.0 / (mpTracker->mBaroVzSigma * mpTracker->mBaroVzSigma);
+                                mpCurrentKeyFrame->mbBaroVzObs = true;
+                                mVzbC4 = mpCurrentKeyFrame->mBaroVz;
+                            }
+                        }
                         bool bLarge = ((mpTracker->GetMatchesInliers()>75)&&mbMonocular)||((mpTracker->GetMatchesInliers()>100)&&!mbMonocular);
+                        const Eigen::Vector3f zPreC2 = mpCurrentKeyFrame->GetCameraCenter(), vPreC2 = mpCurrentKeyFrame->GetVelocity();
                         Optimizer::LocalInertialBA(mpCurrentKeyFrame, &mbAbortBA, mpCurrentKeyFrame->GetMap(),num_FixedKF_BA,num_OptKF_BA,num_MPs_BA,num_edges_BA, bLarge, !mpCurrentKeyFrame->GetMap()->GetIniertialBA2());
                         b_doneLBA = true;
+                        // C2 (2026-10-31, log only): climb diagnostic per keyframe while airborne (baro > 1 m).
+                        {
+                            double hC2 = 0, hPadC2 = 0;
+                            if(mpTracker->AltitudeAt(mpCurrentKeyFrame->mTimeStamp, hC2, hPadC2) && hC2 - hPadC2 > 1.0)
+                            {
+                                const Eigen::Vector3f z1 = mpCurrentKeyFrame->GetCameraCenter(), v1 = mpCurrentKeyFrame->GetVelocity();
+                                std::cerr << std::fixed << std::setprecision(3) << "FastTrack C2 kf t=" << mpCurrentKeyFrame->mTimeStamp
+                                          << " h=" << hC2 - hPadC2 << " z_pre=" << zPreC2(2) << " vz_pre=" << vPreC2(2)
+                                          << " z=" << z1(2) << " vz=" << v1(2) << " vzb=" << mVzbC4 << " ba_z=" << mpCurrentKeyFrame->GetAccBias()(2)
+                                          << " new_mp=" << mnNewMpC2 << " par_med=" << mParMedC3 << " par_p10=" << mParP10C3
+                                          << " climb=" << (mbClimbC3 ? 1 : 0) << " inl=" << mpTracker->GetMatchesInliers()
+                                          << " fixedKF=" << num_FixedKF_BA << " optKF=" << num_OptKF_BA << " mps=" << num_MPs_BA
+                                          << std::defaultfloat << std::setprecision(6) << std::endl;
+                            }
+                        }
+                        // C7c (2026-10-31): set the keyframe accelerometer bias from the baro-inertial vertical KF.
+                        if(mpTracker->mbVertKF && mbMonocular && mbMetricScaleFixed && mpCurrentKeyFrame->GetMap()->GetIniertialBA2())
+                            VertKFInject();
+                        // C7 (2026-10-31): in-flight accelerometer-bias observer (metric map after BA2).
+                        if(mpTracker->mbAccBiasObs && mbMonocular && mbMetricScaleFixed && mpCurrentKeyFrame->GetMap()->GetIniertialBA2())
+                            AccBiasObserverStep(vPreC2(2));
+                        else
+                            mC7.clear();
+                        // B4 diagnostic (log only): barometric scale observation for this keyframe after BA2.
+                        if(mbMetricScaleFixed && mpCurrentKeyFrame->GetMap()->GetIniertialBA2())
+                        {
+                            double d = 0, tilt = 0, h = 0, hPad = 0; int nI = 0, nP = 0;
+                            const bool g = mpTracker->LocalGroundDistance(mpCurrentKeyFrame, d, tilt, nI, nP);
+                            if(g && d > 1e-3 && mpTracker->AltitudeAt(mpCurrentKeyFrame->mTimeStamp, h, hPad))
+                            {
+                                std::cerr << std::fixed << std::setprecision(3) << "FastTrack B4 kf t=" << mpCurrentKeyFrame->mTimeStamp
+                                          << " h=" << h - hPad << " d=" << d << " s=" << (h - hPad + mMetricC) / d
+                                          << " z=" << mpCurrentKeyFrame->GetCameraCenter()(2) << " tilt=" << tilt
+                                          << " inl=" << nI << "/" << nP << std::defaultfloat << std::setprecision(6) << std::endl;
+                                {
+                                    unique_lock<mutex> lockObs(mMutexBaroObs);
+                                    mBaroObs.t = mpCurrentKeyFrame->mTimeStamp; mBaroObs.h = h - hPad; mBaroObs.d = d;
+                                    mBaroObs.s = (h - hPad + mMetricC) / d; mBaroObs.z = mpCurrentKeyFrame->GetCameraCenter()(2);
+                                    mBaroObs.tilt = tilt; mBaroObs.nI = nI; mBaroObs.nP = nP;
+                                    mBaroObs.mapId = mpCurrentKeyFrame->GetMap()->GetId(); ++mBaroObs.seq;
+                                }
+                                if(mpTracker->mbCruiseScale && mbMonocular && nP >= 60 && nI >= mpTracker->mCruiseMinInlier * nP)
+                                    CruiseScaleStep((h - hPad + mMetricC) / d, h - hPad, tilt);
+                                if(mpTracker->mbTiltCorr && mbMonocular)  // C8
+                                    TiltCorrStep(h - hPad);
+                            }
+                        }
                     }
                     else
                     {
@@ -223,26 +305,47 @@ void LocalMapping::Run()
                         else if(!mpCurrentKeyFrame->GetMap()->GetIniertialBA2()){
                             if (mTinit>15.0f){
                                 FT_CALC_LOG("local_mapping.viba.start stage=2 init_time=%f", mTinit);
-                                mpCurrentKeyFrame->GetMap()->SetIniertialBA2();
+                                // P2 (2026-10-30): BA2 is marked done only after its optimization has updated the map
+                                // (was before it: the nav output latched on the pre-BA2 map and jumped when BA2 landed).
+                                const unsigned int nIdxBefore = mIdxInit;
                                 if (mbMonocular)
                                     InitializeIMU(0.f, 0.f, true);
                                 else
                                     InitializeIMU(0.f, 0.f, true);
+                                if (mIdxInit != nIdxBefore)
+                                    mpCurrentKeyFrame->GetMap()->SetIniertialBA2();
 
                                 FT_CALC_LOG("local_mapping.viba.end stage=2");
                             }
                         }
 
                         // scale refinement
-                        if (((mpAtlas->KeyFramesInMap())<=200) &&
+                        // C1 (2026-10-31): no whole-map scale operation while climbing (Metric.DeferClimbRate > 0).
+                        double climbRate = 0.0;
+                        const bool bDeferClimb = mpTracker->ClimbingAt(mpCurrentKeyFrame->mTimeStamp, climbRate);
+                        if (bDeferClimb && (++mDeferClimbLog % 10 == 1))
+                            std::cerr << "FastTrack C1 scale operation deferred: climb " << climbRate << " m/s, tinit " << mTinit
+                                      << " (" << mDeferClimbLog << " keyframes)" << std::endl;
+                        // B5: pad start, map not metric yet -> try the baro scale fit every 5th keyframe after BA2.
+                        const bool bClimbFit = !bDeferClimb && mbMonocular && mpTracker->mbMetricInitEnabled && !mbMetricScaleFixed &&
+                                               mpCurrentKeyFrame->GetMap()->GetIniertialBA2() && (++mClimbFitTick % 5 == 0);
+                        if (bDeferClimb)
+                        {
+                        }
+                        else if (bClimbFit)
+                            ScaleRefinement(true);
+                        else if (((mpAtlas->KeyFramesInMap())<=200) &&
                                 ((mTinit>25.0f && mTinit<25.5f)||
                                 (mTinit>35.0f && mTinit<35.5f)||
                                 (mTinit>45.0f && mTinit<45.5f)||
                                 (mTinit>55.0f && mTinit<55.5f)||
                                 (mTinit>65.0f && mTinit<65.5f)||
                                 (mTinit>75.0f && mTinit<75.5f))){
-                            if (mbMonocular)
+                            if (mbMonocular && !mbMetricScaleFixed)
+                            {
+                                std::cerr << "FastTrack scheduled scale refinement: tinit " << mTinit << std::endl;  // C1: was silent
                                 ScaleRefinement();
+                            }
                         }
                     }
                 }
@@ -407,6 +510,14 @@ void LocalMapping::MapPointCulling()
 void LocalMapping::CreateNewMapPoints()
 {
     FT_CALC_SCOPE();
+    // C3 (2026-10-31): parallax gate while climbing + parallax of the created points (log).
+    double climbRateC3 = 0.0;
+    const bool bClimbC3 = mpTracker->ClimbRateAbove(mpCurrentKeyFrame->mTimeStamp, mpTracker->mClimbParallaxRate, climbRateC3);
+    mbClimbC3 = bClimbC3;
+    const float cosMinInertial = (bClimbC3 && mpTracker->mClimbMinParallaxDeg > 0.0) ?
+        std::min(0.9996f, (float)std::cos(mpTracker->mClimbMinParallaxDeg * M_PI / 180.0)) : 0.9996f;
+    std::vector<float> vParC3;
+    mParMedC3 = -1.f; mParP10C3 = -1.f;  // stays -1 when the loop returns early (new keyframe waiting)
     // Retrieve neighbor keyframes in covisibility graph
     int nn = 10;
     // For stereo inertial case
@@ -600,7 +711,7 @@ void LocalMapping::CreateNewMapPoints()
             bool goodProj = false;
             bool bPointStereo = false;
             if(cosParallaxRays<cosParallaxStereo && cosParallaxRays>0 && (bStereo1 || bStereo2 ||
-                                                                          (cosParallaxRays<0.9996 && mbInertial) || (cosParallaxRays<0.9998 && !mbInertial)))
+                                                                          (cosParallaxRays<cosMinInertial && mbInertial) || (cosParallaxRays<0.9998 && !mbInertial)))
             {
                 goodProj = GeometricTools::Triangulate(xn1, xn2, eigTcw1, eigTcw2, x3D);
                 if(!goodProj)
@@ -712,6 +823,7 @@ void LocalMapping::CreateNewMapPoints()
 
             // Triangulation is succesfull
             MapPoint* pMP = new MapPoint(x3D, mpCurrentKeyFrame, mpAtlas->GetCurrentMap());
+            vParC3.push_back((float)(std::acos(std::min(1.f, std::max(-1.f, cosParallaxRays))) * 180.0 / M_PI));  // C3 log
             if (bPointStereo)
                 countStereo++;
             
@@ -729,6 +841,13 @@ void LocalMapping::CreateNewMapPoints()
             mlpRecentAddedMapPoints.push_back(pMP);
         }
     }    
+    // C3 (2026-10-31) log: parallax of the points created at this keyframe.
+    if(vParC3.empty()) { mParMedC3 = -1.f; mParP10C3 = -1.f; }
+    else
+    {
+        std::sort(vParC3.begin(), vParC3.end());
+        mParMedC3 = vParC3[vParC3.size() / 2]; mParP10C3 = vParC3[vParC3.size() / 10];
+    }
 }
 
 void LocalMapping::SearchInNeighbors()
@@ -1048,27 +1167,25 @@ void LocalMapping::KeyFrameCulling()
 
                     if((bInitImu && (pKF->mnId<last_ID) && t<3.) || (t<0.5))
                     {
-                        pKF->mNextKF->mpImuPreintegrated->MergePrevious(pKF->mpImuPreintegrated);
-                        pKF->mNextKF->mPrevKF = pKF->mPrevKF;
-                        pKF->mPrevKF->mNextKF = pKF->mNextKF;
-                        pKF->mNextKF = NULL;
-                        pKF->mPrevKF = NULL;
-                        pKF->SetBadFlag();
+                        KeyFrame* pPrevKF = pKF->mPrevKF;
+                        if(!pKF->SetBadFlag(pPrevKF, true))
+                            FT_CALC_LOG("research.cull.retained kf=%llu reason=tree_repair_unavailable",
+                                        static_cast<unsigned long long>(pKF->mnId));
                     }
                     else if(!mpCurrentKeyFrame->GetMap()->GetIniertialBA2() && ((pKF->GetImuPosition()-pKF->mPrevKF->GetImuPosition()).norm()<0.02) && (t<3))
                     {
-                        pKF->mNextKF->mpImuPreintegrated->MergePrevious(pKF->mpImuPreintegrated);
-                        pKF->mNextKF->mPrevKF = pKF->mPrevKF;
-                        pKF->mPrevKF->mNextKF = pKF->mNextKF;
-                        pKF->mNextKF = NULL;
-                        pKF->mPrevKF = NULL;
-                        pKF->SetBadFlag();
+                        KeyFrame* pPrevKF = pKF->mPrevKF;
+                        if(!pKF->SetBadFlag(pPrevKF, true))
+                            FT_CALC_LOG("research.cull.retained kf=%llu reason=tree_repair_unavailable",
+                                        static_cast<unsigned long long>(pKF->mnId));
                     }
                 }
             }
             else
             {
-                pKF->SetBadFlag();
+                if(!pKF->SetBadFlag(pKF->mPrevKF))
+                    FT_CALC_LOG("research.cull.retained kf=%llu reason=tree_repair_unavailable",
+                                static_cast<unsigned long long>(pKF->mnId));
             }
         }
         if((count > 20 && mbAbortBA) || count>100)
@@ -1140,6 +1257,7 @@ void LocalMapping::ResetIfRequested()
             mbNotBA2 = true;
             mbNotBA1 = true;
             mbBadImu=false;
+            mbMetricScaleFixed = false;
 
             mIdxInit=0;
 
@@ -1192,6 +1310,107 @@ bool LocalMapping::isFinished()
 {
     unique_lock<mutex> lock(mMutexFinish);
     return mbFinished;
+}
+
+void LocalMapping::AddGravityReference(double t, const Eigen::Matrix3f &Rwb)
+{
+    if(!std::isfinite(t) || !Rwb.allFinite())
+        return;
+    unique_lock<mutex> lock(mMutexGravRef);
+    if(!mdGravRef.empty() && t <= mdGravRef.back().first)
+        return;
+    mdGravRef.emplace_back(t, Rwb);
+    while(!mdGravRef.empty() && t - mdGravRef.front().first > 120.0)
+        mdGravRef.pop_front();
+}
+
+bool LocalMapping::GravityDirFromReference(const std::vector<KeyFrame*> &vpKF, Eigen::Vector3f &dirG, int &nUsed)
+{
+    // Gravity (down) in the map frame: R_map_body(KF) * R_world_body(FC, nearest in time)^T * (0,0,-1).
+    Eigen::Vector3f acc = Eigen::Vector3f::Zero();
+    nUsed = 0;
+    unique_lock<mutex> lock(mMutexGravRef);
+    if(mdGravRef.empty())
+        return false;
+    for(KeyFrame* pKF : vpKF)
+    {
+        if(!pKF || pKF->isBad())
+            continue;
+        const double t = pKF->mTimeStamp;
+        auto it = std::lower_bound(mdGravRef.begin(), mdGravRef.end(), t,
+            [](const std::pair<double, Eigen::Matrix3f> &a, double v) { return a.first < v; });
+        const std::pair<double, Eigen::Matrix3f> *best = nullptr;
+        if(it != mdGravRef.end()) best = &(*it);
+        if(it != mdGravRef.begin()) { auto ip = std::prev(it); if(!best || std::fabs(ip->first - t) < std::fabs(best->first - t)) best = &(*ip); }
+        if(!best || std::fabs(best->first - t) > 0.05)
+            continue;
+        const Eigen::Vector3f gBody = best->second.transpose() * Eigen::Vector3f(0.f, 0.f, -1.f);
+        acc += pKF->GetImuRotation() * gBody;
+        nUsed++;
+    }
+    if(nUsed < 3 || acc.norm() < 1e-3f)
+        return false;
+    dirG = acc.normalized();
+    return true;
+}
+
+void LocalMapping::SetRestGyroBiasPrior(const Eigen::Vector3f &bg, float sigma)
+{
+    if (!(sigma > 0.f) || !bg.allFinite())
+        return;
+    unique_lock<mutex> lock(mMutexRestGyroBias);
+    mRestGyroBias = bg;
+    mRestGyroBiasInfo = 1.0 / (static_cast<double>(sigma) * static_cast<double>(sigma));
+    mbRestGyroBias = true;
+}
+
+void LocalMapping::ClearRestGyroBiasPrior()
+{
+    unique_lock<mutex> lock(mMutexRestGyroBias);
+    mbRestGyroBias = false;
+}
+
+bool LocalMapping::GetRestGyroBiasPrior(Eigen::Vector3f &bg, double &info)
+{
+    unique_lock<mutex> lock(mMutexRestGyroBias);
+    if (!mbRestGyroBias)
+        return false;
+    bg = mRestGyroBias;
+    info = mRestGyroBiasInfo;
+    return true;
+}
+
+void LocalMapping::SetAccBiasPrior(const Eigen::Vector3f &ba, float sigma)
+{
+    if (!(sigma > 0.f) || !ba.allFinite())
+        return;
+    unique_lock<mutex> lock(mMutexAccBiasPrior);
+    mAccBiasPrior = ba;
+    mAccBiasPriorInfo = 1.0 / (static_cast<double>(sigma) * static_cast<double>(sigma));
+    mbAccBiasPrior = true;
+}
+
+void LocalMapping::ClearAccBiasPrior()
+{
+    unique_lock<mutex> lock(mMutexAccBiasPrior);
+    mbAccBiasPrior = false;
+}
+
+bool LocalMapping::GetBaroScaleObs(BaroScaleObs &o)
+{
+    unique_lock<mutex> lock(mMutexBaroObs);
+    o = mBaroObs;
+    return mBaroObs.seq > 0;
+}
+
+bool LocalMapping::GetAccBiasPrior(Eigen::Vector3f &ba, double &info)
+{
+    unique_lock<mutex> lock(mMutexAccBiasPrior);
+    if (!mbAccBiasPrior)
+        return false;
+    ba = mAccBiasPrior;
+    info = mAccBiasPriorInfo;
+    return true;
 }
 
 void LocalMapping::InitializeIMU(float priorG, float priorA, bool bFIBA)
@@ -1269,6 +1488,22 @@ void LocalMapping::InitializeIMU(float priorG, float priorA, bool bFIBA)
         }
 
         dirG = dirG/dirG.norm();
+        mbMapGravityFromRef = false;
+        if(mbGravityFromRef)
+        {
+            Eigen::Vector3f dirRef; int nRef = 0;
+            if(GravityDirFromReference(vpKF, dirRef, nRef))
+            {
+                const float angDeg = std::acos(std::max(-1.f, std::min(1.f, dirRef.dot(dirG)))) * 180.f / static_cast<float>(M_PI);
+                std::cerr << "FastTrack IMU init: gravity from the flight controller (" << nRef << " keyframes); the "
+                          << "velocity-based estimate was " << angDeg << " deg away" << std::endl;
+                FT_CALC_LOG("local_mapping.imu_initialize.gravity_from_reference kfs=%d estimate_error_deg=%f", nRef, angDeg);
+                dirG = dirRef;
+                mbMapGravityFromRef = true;
+            }
+            else
+                std::cerr << "FastTrack IMU init: no flight-controller attitude for the keyframes; gravity estimated" << std::endl;
+        }
         Eigen::Vector3f gI(0.0f, 0.0f, -1.0f);
         Eigen::Vector3f v = gI.cross(dirG);
         const float nv = v.norm();
@@ -1287,11 +1522,52 @@ void LocalMapping::InitializeIMU(float priorG, float priorA, bool bFIBA)
     }
 
     mScale=1.0;
+    // B3: baro scale fit whenever metric initialization is enabled; a successful fit makes the map scale metric.
+    if(mbMetricScaleFixed || mpTracker->mbMetricInitEnabled)
+    {
+        double s = 0, c = 0, range = 0, rms = 0; int n = 0;
+        const bool fit = mpTracker->BaroScaleFit(mpCurrentKeyFrame->GetMap(), vpKF, s, c, n, range, rms);
+        // First metric fix: any positive s (the map scale is arbitrary until now); afterwards corrections within 0.5-2.
+        // Consistency: rms within 0.5 m + 5% of the height range; c (pad camera height + baro pad offset) within -2..5 m.
+        const bool sOk = mbMetricScaleFixed ? (s > 0.5 && s < 2.0) : (s > 1e-3 && s < 1e3);
+        const bool consistent = fit && sOk && rms < 0.5 + 0.05 * range && c > -2.0 && c < 5.0;
+        if(consistent)
+        {
+            mScale = s;
+            mbMetricScaleFixed = true;
+            mMetricC = c;
+            std::cerr << "FastTrack baro scale fit: s=" << s << " pad camera height c=" << c << " m, " << n
+                      << " keyframes, height range " << range << " m, rms " << rms << " m" << std::endl;
+        }
+        else
+            std::cerr << "FastTrack baro scale fit: not used (fit " << fit << ", n=" << n << ", range " << range << " m, s=" << s
+                      << ", c=" << c << " m, rms " << rms << " m, metric " << mbMetricScaleFixed << ")" << std::endl;
+    }
 
     mInitTime = mpTracker->mLastFrame.mTimeStamp-vpKF.front()->mTimeStamp;
 
+    // Rest-measured gyro bias prior (SetRestGyroBiasPrior), sampled once for this initialization stage.
+    Eigen::Vector3f restBg;
+    double restBgInfo = 0.0;
+    const bool bRestBg = GetRestGyroBiasPrior(restBg, restBgInfo);
+    const Eigen::Vector3f *pRestBg = bRestBg ? &restBg : NULL;
+    // Init profile: accelerometer bias of a saved initialization replaces the prior towards zero.
+    Eigen::Vector3f profBa;
+    double profBaInfo = 0.0;
+    const bool bProfBa = GetAccBiasPrior(profBa, profBaInfo);
+    const Eigen::Vector3f *pProfBa = bProfBa ? &profBa : NULL;
+    if (bProfBa)
+        std::cerr << "FastTrack IMU init: accelerometer bias from the init profile [" << profBa.transpose()
+                  << "] m/s^2, info " << profBaInfo << " (stage prior_a " << priorA << ")" << std::endl;
+    FT_CALC_LOG("local_mapping.imu_initialize.rest_gyro_prior used=%d bg=%f,%f,%f info=%f prior_g=%f",
+                bRestBg ? 1 : 0, bRestBg ? restBg.x() : 0.f, bRestBg ? restBg.y() : 0.f, bRestBg ? restBg.z() : 0.f,
+                restBgInfo, priorG);
+
     std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
-    Optimizer::InertialOptimization(mpAtlas->GetCurrentMap(), mRwg, mScale, mbg, mba, mbMonocular, infoInertial, false, false, priorG, priorA);
+    if(mbMetricScaleFixed)
+        std::cerr << "FastTrack IMU init: scale fixed (metric initialization)" << std::endl;
+    Optimizer::InertialOptimization(mpAtlas->GetCurrentMap(), mRwg, mScale, mbg, mba, mbMonocular && !mbMetricScaleFixed, infoInertial, false, false, priorG, priorA,
+                                    pRestBg, restBgInfo, mbGravityFromRef && mbMapGravityFromRef, pProfBa, profBaInfo);
 
     std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
 
@@ -1305,7 +1581,7 @@ void LocalMapping::InitializeIMU(float priorG, float priorA, bool bFIBA)
     // Before this line we are not changing the map
     {
         unique_lock<mutex> lock(mpAtlas->GetCurrentMap()->mMutexMapUpdate);
-        if ((fabs(mScale - 1.f) > 0.00001) || !mbMonocular) {
+        if ((fabs(mScale - 1.f) > 0.00001) || !mbMonocular || mbMetricScaleFixed) {
             Sophus::SE3f Twg(mRwg.cast<float>().transpose(), Eigen::Vector3f::Zero());
             mpAtlas->GetCurrentMap()->ApplyScaledRotation(Twg, mScale, true);
             mpTracker->UpdateFrameIMU(mScale, vpKF[0]->GetImuBias(), mpCurrentKeyFrame);
@@ -1331,9 +1607,11 @@ void LocalMapping::InitializeIMU(float priorG, float priorA, bool bFIBA)
     if (bFIBA)
     {
         if (priorA!=0.f)
-            Optimizer::FullInertialBA(mpAtlas->GetCurrentMap(), 100, false, mpCurrentKeyFrame->mnId, NULL, true, priorG, priorA);
+            Optimizer::FullInertialBA(mpAtlas->GetCurrentMap(), 100, false, mpCurrentKeyFrame->mnId, NULL, true, priorG, priorA,
+                                      NULL, NULL, pRestBg, restBgInfo, pProfBa, profBaInfo);
         else
-            Optimizer::FullInertialBA(mpAtlas->GetCurrentMap(), 100, false, mpCurrentKeyFrame->mnId, NULL, false);
+            Optimizer::FullInertialBA(mpAtlas->GetCurrentMap(), 100, false, mpCurrentKeyFrame->mnId, NULL, false, 1e2, 1e6,
+                                      NULL, NULL, pRestBg, restBgInfo, pProfBa, profBaInfo);
     }
 
     std::chrono::steady_clock::time_point t5 = std::chrono::steady_clock::now();
@@ -1341,7 +1619,8 @@ void LocalMapping::InitializeIMU(float priorG, float priorA, bool bFIBA)
     Verbose::PrintMess("Global Bundle Adjustment finished\nUpdating map ...", Verbose::VERBOSITY_NORMAL);
 
     // Get Map Mutex
-    unique_lock<mutex> lock(mpAtlas->GetCurrentMap()->mMutexMapUpdate);
+    Map* pUpdateLockedMap = mpAtlas->GetCurrentMap();
+    unique_lock<mutex> lock(pUpdateLockedMap->mMutexMapUpdate);
 
     unsigned long GBAid = mpCurrentKeyFrame->mnId;
 
@@ -1439,24 +1718,50 @@ void LocalMapping::InitializeIMU(float priorG, float priorA, bool bFIBA)
     mnKFs=vpKF.size();
     mIdxInit++;
 
-    for(list<KeyFrame*>::iterator lit = mlNewKeyFrames.begin(), lend=mlNewKeyFrames.end(); lit!=lend; lit++)
+    // RESEARCH culling-v4b-r1: this thread holds pUpdateLockedMap->mMutexMapUpdate, which
+    // SetBadFlag would otherwise lock again. The queue is drained above under that lock, so it is
+    // normally empty here; count it so a non-empty case is visible.
+    list<KeyFrame*> lPendingKFs;
     {
-        (*lit)->SetBadFlag();
-        delete *lit;
+        unique_lock<mutex> lockNewKFs(mMutexNewKFs);
+        lPendingKFs.swap(mlNewKeyFrames);
     }
-    mlNewKeyFrames.clear();
+    if(!lPendingKFs.empty())
+        FT_CALC_LOG("research.kf.pending_after_drain n=%llu", static_cast<unsigned long long>(lPendingKFs.size()));
+    for(list<KeyFrame*>::iterator lit = lPendingKFs.begin(), lend=lPendingKFs.end(); lit!=lend; lit++)
+    {
+        KeyFrame* pPendingKF = *lit;
+        if(pPendingKF->SetBadFlagMapUpdateHeld(pUpdateLockedMap))
+            delete pPendingKF;
+        else
+            FT_CALC_LOG("research.kf.pending_delete_refused id=%llu action=retain_in_map",
+                        static_cast<unsigned long long>(pPendingKF->mnId));
+    }
 
     mpTracker->mState=Tracking::OK;
     bInitializing = false;
 
     mpCurrentKeyFrame->GetMap()->IncreaseChangeIndex();
 
+    // I1 (2026-10-30): stage summary on stderr. priorA identifies the stage (1e10 first init, 1e5 BA1, 0 BA2). In a
+    // gravity-aligned map a horizontal accelerometer bias b is indistinguishable from a tilt atan(b / g) without
+    // rotation excitation; the tilt-equivalent is printed for the 28 Oct tilt analysis (body axes, ~level at init).
+    {
+        const IMU::Bias b = mpCurrentKeyFrame->GetImuBias();
+        const double bxy = std::sqrt(double(b.bax) * b.bax + double(b.bay) * b.bay);
+        std::cerr << std::fixed << std::setprecision(4) << "FastTrack IMU init stage: t=" << mpCurrentKeyFrame->mTimeStamp
+                  << " priorA=" << std::scientific << std::setprecision(1) << priorA << std::fixed << std::setprecision(4)
+                  << " map=" << mpCurrentKeyFrame->GetMap()->GetId() << " kfs=" << mnKFs << " scale=" << mScale
+                  << " ba=[" << b.bax << " " << b.bay << " " << b.baz << "] bg=[" << b.bwx << " " << b.bwy << " " << b.bwz
+                  << "] |ba_xy|=" << bxy << " tilt_equiv_deg=" << std::setprecision(2) << std::atan2(bxy, 9.81) * 180.0 / M_PI
+                  << " metric=" << (mbMetricScaleFixed ? 1 : 0) << std::defaultfloat << std::setprecision(6) << std::endl;
+    }
     FT_CALC_LOG("local_mapping.imu_initialize.end scale=%f keyframes=%d", mScale, mnKFs);
 
     return;
 }
 
-void LocalMapping::ScaleRefinement()
+void LocalMapping::ScaleRefinement(bool baroOnly)
 {
     FT_CALC_SCOPE();
     // Minimum number of keyframes to compute a solution
@@ -1476,6 +1781,31 @@ void LocalMapping::ScaleRefinement()
     lpKF.push_front(pKF);
     vector<KeyFrame*> vpKF(lpKF.begin(),lpKF.end());
 
+    // B5: barometric scale from the climb (s*d = h + c over all keyframes since the map start, pad included). Tried
+    // before the pending keyframes are drained, so a failed baro-only attempt leaves local mapping untouched.
+    bool bBaroScale = false; double sBaro = 1.0;
+    if(mpTracker->mbMetricInitEnabled && !mbMetricScaleFixed)
+    {
+        double s = 0, c = 0, range = 0, rms = 0; int n = 0;
+        const bool fit = mpTracker->BaroScaleFit(mpCurrentKeyFrame->GetMap(), vpKF, s, c, n, range, rms);
+        const bool ok = fit && s > 0.2 && s < 5.0 && range >= 10.0 && rms < 0.5 + 0.05 * range && c > -2.0 && c < 5.0;
+        if(ok)
+        {
+            sBaro = s; bBaroScale = true; mbMetricScaleFixed = true; mMetricC = c;
+            std::cerr << "FastTrack climb baro scale: s=" << s << " c=" << c << " m, " << n << " keyframes, height range "
+                      << range << " m, rms " << rms << " m" << std::endl;
+        }
+        else if(baroOnly)
+        {
+            if(++mClimbFitLog % 4 == 1)
+                std::cerr << "FastTrack climb baro scale: not yet (fit " << fit << ", n=" << n << ", range " << range
+                          << " m, s=" << s << ", c=" << c << " m, rms " << rms << " m)" << std::endl;
+            return;
+        }
+    }
+    else if(baroOnly)
+        return;
+
     while(CheckNewKeyFrames())
     {
         ProcessNewKeyFrame();
@@ -1486,10 +1816,11 @@ void LocalMapping::ScaleRefinement()
     const int N = vpKF.size();
 
     mRwg = Eigen::Matrix3d::Identity();
-    mScale=1.0;
+    mScale = bBaroScale ? sBaro : 1.0;
 
     std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
-    Optimizer::InertialOptimization(mpAtlas->GetCurrentMap(), mRwg, mScale);
+    if(!bBaroScale)
+        Optimizer::InertialOptimization(mpAtlas->GetCurrentMap(), mRwg, mScale);
     std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
 
     if (mScale<1e-1) // 1e-1
@@ -1501,7 +1832,8 @@ void LocalMapping::ScaleRefinement()
     
     Sophus::SO3d so3wg(mRwg);
     // Before this line we are not changing the map
-    unique_lock<mutex> lock(mpAtlas->GetCurrentMap()->mMutexMapUpdate);
+    Map* pUpdateLockedMap = mpAtlas->GetCurrentMap();
+    unique_lock<mutex> lock(pUpdateLockedMap->mMutexMapUpdate);
     std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
     if ((fabs(mScale-1.f)>0.002)||!mbMonocular)
     {
@@ -1511,12 +1843,25 @@ void LocalMapping::ScaleRefinement()
     }
     std::chrono::steady_clock::time_point t3 = std::chrono::steady_clock::now();
 
-    for(list<KeyFrame*>::iterator lit = mlNewKeyFrames.begin(), lend=mlNewKeyFrames.end(); lit!=lend; lit++)
+    // RESEARCH culling-v4b-r1: this thread holds pUpdateLockedMap->mMutexMapUpdate, which
+    // SetBadFlag would otherwise lock again. The queue is drained above under that lock, so it is
+    // normally empty here; count it so a non-empty case is visible.
+    list<KeyFrame*> lPendingKFs;
     {
-        (*lit)->SetBadFlag();
-        delete *lit;
+        unique_lock<mutex> lockNewKFs(mMutexNewKFs);
+        lPendingKFs.swap(mlNewKeyFrames);
     }
-    mlNewKeyFrames.clear();
+    if(!lPendingKFs.empty())
+        FT_CALC_LOG("research.kf.pending_after_drain n=%llu", static_cast<unsigned long long>(lPendingKFs.size()));
+    for(list<KeyFrame*>::iterator lit = lPendingKFs.begin(), lend=lPendingKFs.end(); lit!=lend; lit++)
+    {
+        KeyFrame* pPendingKF = *lit;
+        if(pPendingKF->SetBadFlagMapUpdateHeld(pUpdateLockedMap))
+            delete pPendingKF;
+        else
+            FT_CALC_LOG("research.kf.pending_delete_refused id=%llu action=retain_in_map",
+                        static_cast<unsigned long long>(pPendingKF->mnId));
+    }
 
     double t_inertial_only = std::chrono::duration_cast<std::chrono::duration<double> >(t1 - t0).count();
 
@@ -1527,6 +1872,41 @@ void LocalMapping::ScaleRefinement()
 }
 
 
+
+void LocalMapping::CruiseScaleStep(double s, double h, double tilt)
+{
+    Map* pMap = mpCurrentKeyFrame->GetMap();
+    if(pMap != mpCruiseMap) { mCruiseObs.clear(); mCruiseSince = 0; mCruiseTotal = 1.0; mpCruiseMap = pMap; }
+    if(h < mpTracker->mCruiseMinHeight || tilt > mpTracker->mCruiseMaxTilt || !(s > 0.2 && s < 5.0))
+        return;
+    mCruiseObs.push_back(s);
+    while((int)mCruiseObs.size() > mpTracker->mCruiseWindow) mCruiseObs.pop_front();
+    if(++mCruiseSince < mpTracker->mCruisePeriod || (int)mCruiseObs.size() < mpTracker->mCruiseWindow)
+        return;
+    std::vector<double> v(mCruiseObs.begin(), mCruiseObs.end());
+    std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
+    const double sMed = v[v.size() / 2];
+    if(std::fabs(sMed - 1.0) <= mpTracker->mCruiseDeadband)
+        return;
+    if(CheckNewKeyFrames())
+        return;  // pending keyframes are not in the map yet and would miss the scaling; retry at the next observation
+    const double step = std::max(1.0 - mpTracker->mCruiseMaxStep, std::min(1.0 + mpTracker->mCruiseMaxStep, 1.0 + mpTracker->mCruiseGain * (sMed - 1.0)));
+    {
+        unique_lock<mutex> lock(pMap->mMutexMapUpdate);
+        const Eigen::Vector3f O = mpCurrentKeyFrame->GetCameraCenter();
+        // Map::ApplyScaledRotation maps p -> s*R*p + t; R = I, t = (1 - s) O keeps the current camera centre fixed.
+        Sophus::SE3f Tyw(Eigen::Matrix3f::Identity(), (1.f - (float)step) * O);
+        pMap->ApplyScaledRotation(Tyw, (float)step, true);
+        mpTracker->UpdateFrameIMU((float)step, mpCurrentKeyFrame->GetImuBias(), mpCurrentKeyFrame);
+    }
+    pMap->IncreaseChangeIndex();
+    mCruiseTotal *= step;
+    for(double &x : mCruiseObs) x /= step;  // earlier observations expressed in the rescaled map
+    mCruiseSince = 0;
+    std::cerr << std::fixed << std::setprecision(4) << "FastTrack B7 cruise scale: t=" << mpCurrentKeyFrame->mTimeStamp
+              << " s_med=" << sMed << " step=" << step << " total=" << mCruiseTotal << " h=" << h << " n=" << v.size()
+              << std::defaultfloat << std::setprecision(6) << std::endl;
+}
 
 bool LocalMapping::IsInitializing()
 {
@@ -1548,6 +1928,230 @@ double LocalMapping::GetCurrKFTime()
 KeyFrame* LocalMapping::GetCurrKF()
 {
     return mpCurrentKeyFrame;
+}
+
+// C7 (2026-10-31): in-flight accelerometer-bias observer. e = vertical acceleration error of the IMU propagation from
+// the previous keyframe (pre-BA velocity of this keyframe minus the optimized velocity of the previous one) against the
+// baro vertical velocity change. A short accelerometer (a_m = a - d) gives e = -d along world z; the bias that removes
+// it is ba + Rwb^T (0, 0, e). The median over Window s becomes a prior on this keyframe's accelerometer bias, with
+// information only along the body direction of world z; the window then restarts so the next estimate measures the
+// error left after the correction.
+void LocalMapping::AccBiasObserverStep(float vzPre)
+{
+    KeyFrame* pKF = mpCurrentKeyFrame;
+    const double t = pKF->mTimeStamp, W = mpTracker->mBaroVzWindow;
+    double h1 = 0, h0 = 0, hPad = 0, hPad0 = 0;
+    if(!mpTracker->AltitudeAt(t, h1, hPad) || !mpTracker->AltitudeAt(t - W, h0, hPad0) || h1 - hPad < mpTracker->mAccBiasObsMinHeight)
+    {
+        mC7.clear();
+        return;
+    }
+    const double vzb = (h1 - h0) / W;
+    const unsigned long mapId = pKF->GetMap()->GetId();
+    if(mC7.have && mC7.mapId == mapId)
+    {
+        const double dt = t - mC7.t;
+        if(dt > 0.05 && dt < 1.0)
+            mC7.e.emplace_back(t, ((double(vzPre) - mC7.vz) - (vzb - mC7.vzb)) / dt);
+    }
+    else
+        mC7.e.clear();
+    mC7.have = true; mC7.mapId = mapId; mC7.t = t; mC7.vz = pKF->GetVelocity()(2); mC7.vzb = vzb;
+    while(!mC7.e.empty() && t - mC7.e.front().first > mpTracker->mAccBiasObsWindow)
+        mC7.e.pop_front();
+    if((int)mC7.e.size() < mpTracker->mAccBiasObsMinKFs || t - mC7.e.front().first < 0.8 * mpTracker->mAccBiasObsWindow)
+        return;
+    std::vector<double> v;
+    v.reserve(mC7.e.size());
+    for(const auto &x : mC7.e)
+        v.push_back(x.second);
+    std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
+    const double eMed = v[v.size() / 2];
+    const double step = std::max(-mpTracker->mAccBiasObsMaxStep, std::min(mpTracker->mAccBiasObsMaxStep, eMed));
+    const Eigen::Vector3f u = pKF->GetImuRotation().transpose() * Eigen::Vector3f::UnitZ();  // world z in the body frame
+    const Eigen::Vector3f ba = pKF->GetAccBias();
+    Eigen::Vector3f target = ba + u * float(step);
+    const float along = u.dot(target), maxB = float(mpTracker->mAccBiasObsMaxBias);
+    if(std::fabs(along) > maxB)
+        target -= u * (along - std::copysign(maxB, along));
+    pKF->mAccBiasObs = target;
+    pKF->mAccBiasObsDir = u;
+    pKF->mAccBiasObsInfo = 1.0 / (mpTracker->mAccBiasObsSigma * mpTracker->mAccBiasObsSigma);
+    pKF->mbAccBiasObs = true;
+    std::cerr << std::fixed << std::setprecision(3) << "FastTrack C7 t=" << t << " e_med=" << eMed << " step=" << step
+              << " n=" << v.size() << " ba=(" << ba(0) << "," << ba(1) << "," << ba(2) << ") target_along=" << u.dot(target)
+              << std::defaultfloat << std::setprecision(6) << std::endl;
+    mC7.e.clear();
+}
+
+// C7c (2026-10-31): the vertical KF's bias b (world z, same gravity constant as the VIO) is what the VIO bias must
+// equal along u = R_wb^T z. Shift the bias of the newest keyframes (temporal chain) by the same step so the random-walk
+// edges between them stay consistent; tracking takes the bias from the last keyframe.
+void LocalMapping::VertKFInject()
+{
+    double b = 0, sd = 1, h = 0, vz = 0, hb = 0, hPad = 0;
+    static int c7cInjDiag = 0;
+    const bool kfOk = mpTracker->GetVertKF(b, sd, h, vz);
+    const bool altOk = mpTracker->AltitudeAt(mpCurrentKeyFrame->mTimeStamp, hb, hPad);
+    if(++c7cInjDiag % 20 == 1)  // C7c diag (log only)
+        std::cerr << std::fixed << std::setprecision(3) << "FastTrack C7c inj-diag t=" << mpCurrentKeyFrame->mTimeStamp
+                  << " kf=" << (kfOk ? 1 : 0) << " sd=" << sd << " maxsd=" << mpTracker->mVkfMaxSd
+                  << " alt=" << (altOk ? 1 : 0) << " h=" << hb - hPad << " minh=" << mpTracker->mVkfMinHeight
+                  << " b=" << b << std::defaultfloat << std::setprecision(6) << std::endl;
+    if(!kfOk || sd > mpTracker->mVkfMaxSd)
+        return;
+    if(!altOk || hb - hPad < mpTracker->mVkfMinHeight)
+        return;
+    b = std::max(-mpTracker->mVkfMaxBias, std::min(mpTracker->mVkfMaxBias, b));
+    const Eigen::Vector3f u0 = mpCurrentKeyFrame->GetImuRotation().transpose() * Eigen::Vector3f::UnitZ();
+    const IMU::Bias b0 = mpCurrentKeyFrame->GetImuBias();
+    const float along = u0.dot(Eigen::Vector3f(b0.bax, b0.bay, b0.baz));
+    const float delta = float(b) - along;
+    if(std::fabs(delta) < 0.005f)
+        return;
+    const float step = std::max(-float(mpTracker->mVkfMaxStep), std::min(float(mpTracker->mVkfMaxStep), delta));
+    int n = 0;
+    for(KeyFrame* pKF = mpCurrentKeyFrame; pKF && n < mpTracker->mVkfChainKFs; pKF = pKF->mPrevKF, n++)
+    {
+        if(pKF->isBad() || pKF->GetMap() != mpCurrentKeyFrame->GetMap())
+            break;
+        const Eigen::Vector3f u = pKF->GetImuRotation().transpose() * Eigen::Vector3f::UnitZ();
+        const IMU::Bias bk = pKF->GetImuBias();
+        const Eigen::Vector3f ba = Eigen::Vector3f(bk.bax, bk.bay, bk.baz) + u * step;
+        pKF->SetNewBias(IMU::Bias(ba(0), ba(1), ba(2), bk.bwx, bk.bwy, bk.bwz));
+    }
+    static int c7cLog = 0;
+    if(++c7cLog % 10 == 1)
+        std::cerr << std::fixed << std::setprecision(3) << "FastTrack C7c t=" << mpCurrentKeyFrame->mTimeStamp
+                  << " kf_b=" << b << " sd=" << sd << " kf_h=" << h << " kf_vz=" << vz << " baro_h=" << hb - hPad
+                  << " vio_along=" << along << " step=" << step << " n=" << n
+                  << std::defaultfloat << std::setprecision(6) << std::endl;
+}
+
+bool LocalMapping::FcRotationAt(double t, Eigen::Matrix3f &Rwb)
+{
+    unique_lock<mutex> lock(mMutexGravRef);
+    if(mdGravRef.empty())
+        return false;
+    auto it = std::lower_bound(mdGravRef.begin(), mdGravRef.end(), t,
+        [](const std::pair<double, Eigen::Matrix3f> &a, double v) { return a.first < v; });
+    const std::pair<double, Eigen::Matrix3f> *best = nullptr;
+    if(it != mdGravRef.end()) best = &(*it);
+    if(it != mdGravRef.begin()) { auto ip = std::prev(it); if(!best || std::fabs(ip->first - t) < std::fabs(best->first - t)) best = &(*ip); }
+    if(!best || std::fabs(best->first - t) > 0.1)
+        return false;
+    Rwb = best->second;
+    return true;
+}
+
+// C8 (2026-10-31): rotate the map toward level when the averaged ground-plane normal is tilted (flat terrain), and shift
+// the accelerometer biases so that f = R^T (a - g) + b is unchanged: with R' = dR R, b' = b + R'^T (g - dR g).
+void LocalMapping::TiltCorrStep(double h)
+{
+    Map* pMap = mpCurrentKeyFrame->GetMap();
+    if(pMap != mpTiltMap) { mTiltObs.clear(); mTiltSince = 0; mTiltTotal = 0.0; mpTiltMap = pMap; mTiltSnapped = false; }
+    if(h < mpTracker->mTiltCorrMinHeight)
+        return;
+    Eigen::Vector3f n; int nI = 0, nP = 0;
+    if(mpTracker->mTiltCorrSource == 1)  // C8f: true up from the FC attitude, expressed in the VIO world
+    {
+        Eigen::Matrix3f Rfc;
+        if(!mpCurrentKeyFrame->bImu || !FcRotationAt(mpCurrentKeyFrame->mTimeStamp, Rfc))
+            return;
+        n = (mpCurrentKeyFrame->GetImuRotation() * Rfc.transpose() * Eigen::Vector3f::UnitZ()).normalized();
+        if(mpTracker->mTiltCorrTurnHold > 0.0)  // C8f v2: no samples or steps during and shortly after turns
+        {
+            const double t = mpCurrentKeyFrame->mTimeStamp;
+            const double t0 = (mTiltPrevT > 0.0 && t - mTiltPrevT < 5.0) ? mTiltPrevT : t - 0.4;
+            mTiltPrevT = t;
+            double rateMax = 0.0;
+            Eigen::Matrix3f Ra, Rb;
+            for(double ta = t0; ta + 0.2 <= t + 1e-6; ta += 0.2)
+                if(FcRotationAt(ta, Ra) && FcRotationAt(ta + 0.2, Rb))
+                    rateMax = std::max(rateMax, double(Eigen::AngleAxisf(Ra.transpose() * Rb).angle()) * 180.0 / M_PI / 0.2);
+            if(rateMax > mpTracker->mTiltCorrTurnRate)
+            {
+                if(t - mTiltTurnT > mpTracker->mTiltCorrTurnHold)
+                    std::cerr << std::fixed << std::setprecision(3) << "FastTrack C8 turn hold: t=" << t << " rate=" << rateMax
+                              << std::defaultfloat << std::setprecision(6) << std::endl;
+                mTiltTurnT = t;
+                mTiltObs.clear();
+                mTiltSince = 0;
+            }
+            if(t - mTiltTurnT < mpTracker->mTiltCorrTurnHold)
+                return;
+        }
+    }
+    else if(!mpTracker->LocalGroundNormal(mpCurrentKeyFrame, n, nI, nP) || nP < 60 || nI < mpTracker->mTiltCorrMinInlier * nP)
+        return;
+    mTiltObs.push_back(n);
+    while((int)mTiltObs.size() > mpTracker->mTiltCorrWindow)
+        mTiltObs.pop_front();
+    const bool snap = mpTracker->mTiltCorrSnapMax > 0.0 && !mTiltSnapped;  // C8s
+    if(snap)
+    {
+        if((int)mTiltObs.size() < mpTracker->mTiltCorrSnapMinObs)
+            return;
+    }
+    else if(++mTiltSince < mpTracker->mTiltCorrPeriod || (int)mTiltObs.size() < mpTracker->mTiltCorrWindow)
+        return;
+    Eigen::Vector3f m = Eigen::Vector3f::Zero();
+    for(const auto &x : mTiltObs) m += x;
+    m.normalize();
+    const double tilt = std::acos(std::min(1.f, m(2))) * 180.0 / M_PI;
+    if(snap && tilt <= mpTracker->mTiltCorrDeadband)
+        mTiltSnapped = true;  // C8s: already level, continue with normal steps
+    if(snap && mpTracker->mTiltCorrSnapResetDeg > 0.0 && tilt > mpTracker->mTiltCorrSnapResetDeg)
+    {
+        // C8r: the map is broken, not tilted; start the initialisation again (same path as the bad-IMU reset).
+        mTiltSnapped = true;
+        std::cerr << std::fixed << std::setprecision(3) << "FastTrack C8 reset: t=" << mpCurrentKeyFrame->mTimeStamp
+                  << " tilt=" << tilt << " limit=" << mpTracker->mTiltCorrSnapResetDeg << " h=" << h << " map=" << pMap->GetId()
+                  << std::defaultfloat << std::setprecision(6) << std::endl;
+        unique_lock<mutex> lock(mMutexReset);
+        mbResetRequestedActiveMap = true;
+        mpMapToReset = pMap;
+        mbBadImu = true;
+        return;
+    }
+    if(tilt <= mpTracker->mTiltCorrDeadband || mTiltTotal >= mpTracker->mTiltCorrMaxTotal)
+        return;
+    if(CheckNewKeyFrames())
+        return;  // pending keyframes would miss the rotation; retry at the next observation
+    Eigen::Vector3f axis = m.cross(Eigen::Vector3f::UnitZ());
+    if(axis.norm() < 1e-6f)
+        return;
+    axis.normalize();
+    const double stepDeg = snap ? std::min(mpTracker->mTiltCorrSnapMax, tilt)  // C8s
+                                : std::min(mpTracker->mTiltCorrMaxStep, mpTracker->mTiltCorrGain * tilt);
+    const Eigen::Matrix3f dR = Eigen::AngleAxisf(float(stepDeg * M_PI / 180.0), axis).toRotationMatrix();
+    const Eigen::Vector3f g(0.f, 0.f, -IMU::GRAVITY_VALUE);
+    const Eigen::Vector3f dg = g - dR * g;
+    int nKF = 0;
+    {
+        unique_lock<mutex> lock(pMap->mMutexMapUpdate);
+        const Eigen::Vector3f O = mpCurrentKeyFrame->GetCameraCenter();
+        Sophus::SE3f Tyw(dR, O - dR * O);  // p -> dR (p - O) + O: the current camera centre stays fixed
+        pMap->ApplyScaledRotation(Tyw, 1.0f, false);
+        for(KeyFrame* pKF : pMap->GetAllKeyFrames())
+        {
+            if(!pKF || pKF->isBad() || !pKF->bImu)
+                continue;
+            const IMU::Bias b = pKF->GetImuBias();
+            const Eigen::Vector3f db = pKF->GetImuRotation().transpose() * dg;  // rotation already updated (R')
+            pKF->SetNewBias(IMU::Bias(b.bax + db(0), b.bay + db(1), b.baz + db(2), b.bwx, b.bwy, b.bwz));
+            nKF++;
+        }
+        mpTracker->UpdateFrameIMU(1.0f, mpCurrentKeyFrame->GetImuBias(), mpCurrentKeyFrame);
+    }
+    pMap->IncreaseChangeIndex();
+    mTiltTotal += stepDeg;
+    if(snap) { mTiltSnapped = true; mTiltObs.clear(); }  // C8s: fresh window after the snap
+    for(auto &x : mTiltObs) x = dR * x;
+    mTiltSince = 0;
+    std::cerr << std::fixed << std::setprecision(3) << "FastTrack C8 tilt: t=" << mpCurrentKeyFrame->mTimeStamp
+              << " tilt=" << tilt << " step=" << stepDeg << " total=" << mTiltTotal << " h=" << h << " n=" << mTiltObs.size()
+              << " kfs=" << nKF << " dbias=" << dg.norm() << " src=" << mpTracker->mTiltCorrSource << " snap=" << (snap ? 1 : 0) << std::defaultfloat << std::setprecision(6) << std::endl;
 }
 
 } //namespace ORB_SLAM

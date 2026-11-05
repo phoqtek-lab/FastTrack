@@ -25,7 +25,7 @@
 
 #include "Thirdparty/DBoW2/DBoW2/FeatureVector.h"
 
-#include<stdint-gcc.h>
+#include <cstdint>  // was <stdint-gcc.h> (GCC-internal; Clang build)
 
 #include <chrono>
 
@@ -439,6 +439,31 @@ namespace ORB_SLAM3
                     {
                         if(static_cast<float>(bestDist1)<mfNNratio*static_cast<float>(bestDist2))
                         {
+                            if(mbMutualCheck && F.Nleft == -1)
+                            {
+                                // Reverse direction: nearest keyframe feature (with a map point) to the chosen frame feature.
+                                const cv::Mat &dFbest = F.mDescriptors.row(bestIdxF);
+                                bool bMutual = true;
+                                for(size_t jKF=0; jKF<vIndicesKF.size(); jKF++)
+                                {
+                                    const unsigned int idxJ = vIndicesKF[jKF];
+                                    if(idxJ == realIdxKF)
+                                        continue;
+                                    MapPoint* pMPj = vpMapPointsKF[idxJ];
+                                    if(!pMPj || pMPj->isBad())
+                                        continue;
+                                    if(DescriptorDistance(pKF->mDescriptors.row(idxJ), dFbest) < bestDist1)
+                                    {
+                                        bMutual = false;
+                                        break;
+                                    }
+                                }
+                                if(!bMutual)
+                                {
+                                    mnMutualRejected++;
+                                    continue;
+                                }
+                            }
                             vpMapPointMatches[bestIdxF]=pMP;
 
                             const cv::KeyPoint &kp =

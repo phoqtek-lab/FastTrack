@@ -28,6 +28,12 @@
 
 #include<mutex>
 #include<thread>
+#include<atomic>
+#include<algorithm>
+#include<cstdio>
+
+// Loop-closure events: always on (at most one line per keyframe), independent of the calculation log.
+#define FT_LC_EVENT(format, ...) do { std::fprintf(stderr, "[loop_closing] " format "\n", ##__VA_ARGS__); std::fflush(stderr); } while(0)
 
 
 namespace ORB_SLAM3
@@ -130,6 +136,9 @@ void LoopClosing::Run()
                         (!mpCurrentKF->GetMap()->isImuInitialized()))
                     {
                         FT_CALC_LOG("loop_closing.merge.abort reason=imu_not_initialized");
+                        mLcStats.mergeRejected++;
+                        FT_LC_EVENT("merge rejected kf=%lu t=%.3f matched_kf=%lu reason=imu_not_initialized",
+                                    mpCurrentKF->mnId, mpCurrentKF->mTimeStamp, mpMergeMatchedKF->mnId);
                     }
                     else
                     {
@@ -147,6 +156,9 @@ void LoopClosing::Run()
                         {
                             FT_CALC_LOG("loop_closing.merge.imu_check scale=%f", mSold_new.scale());
                             if(mSold_new.scale()<0.90||mSold_new.scale()>1.1){
+                                mLcStats.mergeRejected++;
+                                FT_LC_EVENT("merge rejected kf=%lu t=%.3f matched_kf=%lu reason=scale scale=%.3f (allowed 0.90-1.10)",
+                                            mpCurrentKF->mnId, mpCurrentKF->mTimeStamp, mpMergeMatchedKF->mnId, mSold_new.scale());
                                 mpMergeLastCurrentKF->SetErase();
                                 mpMergeMatchedKF->SetErase();
                                 mnMergeNumCoincidences = 0;
@@ -175,6 +187,10 @@ void LoopClosing::Run()
                         //mpTracker->SetStepByStep(true);
 
                         Verbose::PrintMess("*Merge detected", Verbose::VERBOSITY_QUIET);
+                        mLcStats.mergeDetected++;
+                        FT_LC_EVENT("merge accepted kf=%lu t=%.3f matched_kf=%lu matched_t=%.3f current_map=%lu matched_map=%lu",
+                                    mpCurrentKF->mnId, mpCurrentKF->mTimeStamp, mpMergeMatchedKF->mnId,
+                                    mpMergeMatchedKF->mTimeStamp, mpCurrentKF->GetMap()->GetId(), mpMergeMatchedKF->GetMap()->GetId());
 
 #ifdef REGISTER_TIMES
                         std::chrono::steady_clock::time_point time_StartMerge = std::chrono::steady_clock::now();
@@ -195,6 +211,9 @@ void LoopClosing::Run()
 #endif
 
                         Verbose::PrintMess("Merge finished!", Verbose::VERBOSITY_QUIET);
+                        mLcStats.merges++;
+                        FT_LC_EVENT("merge done kf=%lu maps=%d merges=%d", mpCurrentKF->mnId,
+                                    (int)mpAtlas->CountMaps(), mLcStats.merges.load());
                     }
 
                     vdPR_CurrentTime.push_back(mpCurrentKF->mTimeStamp);
@@ -232,6 +251,10 @@ void LoopClosing::Run()
                     vnPR_TypeRecogn.push_back(0);
 
                     Verbose::PrintMess("*Loop detected", Verbose::VERBOSITY_QUIET);
+                    mLcStats.loopDetected++;
+                    FT_LC_EVENT("loop detected kf=%lu t=%.3f matched_kf=%lu matched_t=%.3f map=%lu",
+                                mpCurrentKF->mnId, mpCurrentKF->mTimeStamp, mpLoopMatchedKF->mnId,
+                                mpLoopMatchedKF->mTimeStamp, mpCurrentKF->GetMap()->GetId());
 
                     mg2oLoopScw = mg2oLoopSlw; //*mvg2oSim3LoopTcw[nCurrentIndex];
                     if(mpCurrentKF->GetMap()->IsInertial())
@@ -263,6 +286,9 @@ void LoopClosing::Run()
                         {
                             FT_CALC_LOG("loop_closing.loop.abort reason=rotation_error");
                             bGoodLoop = false;
+                            mLcStats.loopRejected++;
+                            FT_LC_EVENT("loop rejected kf=%lu matched_kf=%lu reason=rotation_error roll=%.4f pitch=%.4f yaw=%.4f rad (allowed 0.008/0.008/0.349)",
+                                        mpCurrentKF->mnId, mpLoopMatchedKF->mnId, phi(0), phi(1), phi(2));
                         }
 
                     }
@@ -286,6 +312,9 @@ void LoopClosing::Run()
 #endif
 
                         mnNumCorrection += 1;
+                        mLcStats.loopCorrected++;
+                        FT_LC_EVENT("loop corrected kf=%lu matched_kf=%lu scale=%.4f corrections=%d", mpCurrentKF->mnId,
+                                    mpLoopMatchedKF->mnId, mg2oLoopScw.scale(), mnNumCorrection);
                     }
 
                     // Reset all variables
@@ -404,6 +433,8 @@ bool LoopClosing::NewDetectCommonRegions()
 
             mbLoopDetected = mnLoopNumCoincidences >= 3;
             mnLoopNumNotFound = 0;
+            FT_LC_EVENT("loop coincidence kf=%lu t=%.3f matched_kf=%lu coincidences=%d/3 proj_matches=%d",
+                        mpCurrentKF->mnId, mpCurrentKF->mTimeStamp, mpLoopMatchedKF->mnId, mnLoopNumCoincidences, numProjMatches);
 
             if(!mbLoopDetected)
             {
@@ -417,6 +448,9 @@ bool LoopClosing::NewDetectCommonRegions()
             mnLoopNumNotFound++;
             if(mnLoopNumNotFound >= 2)
             {
+                mLcStats.loopDropped++;
+                FT_LC_EVENT("loop candidate dropped kf=%lu t=%.3f matched_kf=%lu reason=not_seen_in_2_kfs coincidences=%d",
+                            mpCurrentKF->mnId, mpCurrentKF->mTimeStamp, mpLoopMatchedKF->mnId, mnLoopNumCoincidences);
                 mpLoopLastCurrentKF->SetErase();
                 mpLoopMatchedKF->SetErase();
                 mnLoopNumCoincidences = 0;
@@ -451,6 +485,9 @@ bool LoopClosing::NewDetectCommonRegions()
             mvpMergeMatchedMPs = vpMatchedMPs;
 
             mbMergeDetected = mnMergeNumCoincidences >= 3;
+            FT_LC_EVENT("merge coincidence kf=%lu t=%.3f matched_kf=%lu matched_map=%lu coincidences=%d/3 proj_matches=%d",
+                        mpCurrentKF->mnId, mpCurrentKF->mTimeStamp, mpMergeMatchedKF->mnId,
+                        mpMergeMatchedKF->GetMap()->GetId(), mnMergeNumCoincidences, numProjMatches);
         }
         else
         {
@@ -880,8 +917,16 @@ bool LoopClosing::DetectCommonRegionsFromBoW(std::vector<KeyFrame*> &vpBowCand, 
         index++;
     }
 
+    mLcStats.bowChecks++;
     if(nBestMatchesReproj > 0)
     {
+        mLcStats.bowCandidates++;
+        const bool bSameMap = pBestMatchedKF->GetMap() == mpCurrentKF->GetMap();
+        if(bSameMap) mLcStats.loopCandidates++; else mLcStats.mergeCandidates++;
+        FT_LC_EVENT("%s candidate (bow) kf=%lu t=%.3f matched_kf=%lu matched_t=%.3f matched_map=%lu reproj_matches=%d coincidences=%d/3 bow_candidates=%d",
+                    bSameMap ? "loop" : "merge", mpCurrentKF->mnId, mpCurrentKF->mTimeStamp, pBestMatchedKF->mnId,
+                    pBestMatchedKF->mTimeStamp, pBestMatchedKF->GetMap()->GetId(), nBestMatchesReproj,
+                    nBestNumCoindicendes, numCandidates);
         pLastCurrentKF = mpCurrentKF;
         nNumCoincidences = nBestNumCoindicendes;
         pMatchedKF2 = pBestMatchedKF;
@@ -908,6 +953,22 @@ bool LoopClosing::DetectCommonRegionsFromBoW(std::vector<KeyFrame*> &vpBowCand, 
     FT_CALC_LOG("loop_closing.bow.result detected=%d loop=%d merge=%d candidates=%d",
                 (mbMergeDetected || mbLoopDetected) ? 1 : 0, mbLoopDetected ? 1 : 0,
                 mbMergeDetected ? 1 : 0, numCandidates);
+    if(numCandidates > 0)
+    {
+        // best_stage 8: geometry passed but the region was not confirmed in 3 covisible KFs; 0: failed earlier
+        // (BoW matches, Sim3 solver or projection matches). vnStage is only written with 8 above.
+        int maxStage = 0;
+        for(int st : vnStage) maxStage = std::max(maxStage, st);
+        static int nRejected = 0;
+        nRejected++;
+        if(maxStage >= 8)
+            FT_LC_EVENT("bow rejected kf=%lu t=%.3f bow_candidates=%d best_stage=%d", mpCurrentKF->mnId,
+                        mpCurrentKF->mTimeStamp, numCandidates, maxStage);
+        if(nRejected % 100 == 0)
+            FT_LC_EVENT("bow summary rejected=%d checks=%d candidates=%d loops=%d merges=%d", nRejected,
+                        mLcStats.bowChecks.load(), mLcStats.bowCandidates.load(), mLcStats.loopCorrected.load(),
+                        mLcStats.merges.load());
+    }
     return false;
 }
 
@@ -1224,6 +1285,8 @@ void LoopClosing::CorrectLoop()
     // Launch a new thread to perform Global Bundle Adjustment (Only if few keyframes, if not it would take too much time)
     if(!pLoopMap->isImuInitialized() || (pLoopMap->KeyFramesInMap()<200 && mpAtlas->CountMaps()==1))
     {
+        mLcStats.gbaStarted++;
+        FT_LC_EVENT("gba started after loop kf=%lu keyframes=%d", mpCurrentKF->mnId, (int)pLoopMap->KeyFramesInMap());
         mbRunningGBA = true;
         mbFinishedGBA = false;
         mbStopGBA = false;
@@ -1231,6 +1294,10 @@ void LoopClosing::CorrectLoop()
 
         mpThreadGBA = new thread(&LoopClosing::RunGlobalBundleAdjustment, this, pLoopMap, mpCurrentKF->mnId);
     }
+
+    else
+        FT_LC_EVENT("gba skipped after loop kf=%lu keyframes=%d maps=%d (needs <200 keyframes and one map)",
+                    mpCurrentKF->mnId, (int)pLoopMap->KeyFramesInMap(), (int)mpAtlas->CountMaps());
 
     // Loop closed. Release Local Mapping.
     mpLocalMapper->Release();    
@@ -1584,20 +1651,26 @@ void LoopClosing::MergeLocal()
     }
 
     //Rebuild the essential graph in the local window
-    pCurrentMap->GetOriginKF()->SetFirstConnection(false);
-    pNewChild = mpCurrentKF->GetParent(); // Old parent, it will be the new child of this KF
-    pNewParent = mpCurrentKF; // Old child, now it will be the parent of its own parent(we need eliminate this KF from children list in its old parent)
-    mpCurrentKF->ChangeParent(mpMergeMatchedKF);
-    while(pNewChild)
     {
-        pNewChild->EraseChild(pNewParent); // We remove the relation between the old parent and the new for avoid loop
-        KeyFrame * pOldParent = pNewChild->GetParent();
-
-        pNewChild->ChangeParent(pNewParent);
-
-        pNewParent = pNewChild;
-        pNewChild = pOldParent;
-
+        unique_lock<mutex> currentLock(pCurrentMap->mMutexMapUpdate);
+        unique_lock<mutex> mergeLock(pMergeMap->mMutexMapUpdate);
+        pCurrentMap->GetOriginKF()->SetFirstConnection(false);
+        pNewChild = mpCurrentKF->GetParent(); // Old parent becomes a child along the reversed path.
+        pNewParent = mpCurrentKF;
+        if(!mpCurrentKF->ChangeParentForMerge(mpMergeMatchedKF))
+            FT_CALC_LOG("research.merge.parent_rewire_failed child=%llu parent=%llu",
+                        static_cast<unsigned long long>(mpCurrentKF->mnId),
+                        static_cast<unsigned long long>(mpMergeMatchedKF->mnId));
+        while(pNewChild)
+        {
+            KeyFrame* pOldParent = pNewChild->GetParent();
+            if(!pNewChild->ChangeParentForMerge(pNewParent))
+                FT_CALC_LOG("research.merge.parent_rewire_failed child=%llu parent=%llu",
+                            static_cast<unsigned long long>(pNewChild->mnId),
+                            static_cast<unsigned long long>(pNewParent->mnId));
+            pNewParent = pNewChild;
+            pNewChild = pOldParent;
+        }
     }
 
     //Update the connections between the local window
@@ -1958,18 +2031,25 @@ void LoopClosing::MergeLocal2()
 
     //cout << "Update essential graph" << endl;
     // mpCurrentKF->UpdateConnections(); // to put at false mbFirstConnection
-    pMergeMap->GetOriginKF()->SetFirstConnection(false);
-    pNewChild = mpMergeMatchedKF->GetParent(); // Old parent, it will be the new child of this KF
-    pNewParent = mpMergeMatchedKF; // Old child, now it will be the parent of its own parent(we need eliminate this KF from children list in its old parent)
-    mpMergeMatchedKF->ChangeParent(mpCurrentKF);
-    while(pNewChild)
     {
-        pNewChild->EraseChild(pNewParent); // We remove the relation between the old parent and the new for avoid loop
-        KeyFrame * pOldParent = pNewChild->GetParent();
-        pNewChild->ChangeParent(pNewParent);
-        pNewParent = pNewChild;
-        pNewChild = pOldParent;
-
+        unique_lock<mutex> currentLock(pCurrentMap->mMutexMapUpdate);
+        pMergeMap->GetOriginKF()->SetFirstConnection(false);
+        pNewChild = mpMergeMatchedKF->GetParent(); // Old parent becomes a child along the reversed path.
+        pNewParent = mpMergeMatchedKF;
+        if(!mpMergeMatchedKF->ChangeParentForMerge(mpCurrentKF))
+            FT_CALC_LOG("research.merge.parent_rewire_failed child=%llu parent=%llu",
+                        static_cast<unsigned long long>(mpMergeMatchedKF->mnId),
+                        static_cast<unsigned long long>(mpCurrentKF->mnId));
+        while(pNewChild)
+        {
+            KeyFrame* pOldParent = pNewChild->GetParent();
+            if(!pNewChild->ChangeParentForMerge(pNewParent))
+                FT_CALC_LOG("research.merge.parent_rewire_failed child=%llu parent=%llu",
+                            static_cast<unsigned long long>(pNewChild->mnId),
+                            static_cast<unsigned long long>(pNewParent->mnId));
+            pNewParent = pNewChild;
+            pNewChild = pOldParent;
+        }
     }
 
 
@@ -2553,6 +2633,8 @@ void LoopClosing::RunGlobalBundleAdjustment(Map* pActiveMap, unsigned long nLoop
         mbFinishedGBA = true;
         mbRunningGBA = false;
         FT_CALC_LOG("loop_closing.gba.end stopped=%d", mbStopGBA ? 1 : 0);
+        if(mbStopGBA) mLcStats.gbaStopped++; else mLcStats.gbaCompleted++;
+        FT_LC_EVENT("gba %s loop_kf=%lu", mbStopGBA ? "stopped (new loop)" : "completed, map updated", nLoopKF);
     }
 }
 

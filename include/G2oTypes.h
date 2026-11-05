@@ -766,6 +766,24 @@ public:
 };
 
 // Priors for biases
+// C4 (2026-10-31): barometric vertical velocity of the body, e = v_z - vz_target.
+class EdgeBaroVz : public g2o::BaseUnaryEdge<1,double,VertexVelocity>
+{
+public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    EdgeBaroVz(double vz){ setMeasurement(vz); }
+    virtual bool read(std::istream& is){return false;}
+    virtual bool write(std::ostream& os) const{return false;}
+    void computeError(){
+        const VertexVelocity* VV = static_cast<const VertexVelocity*>(_vertices[0]);
+        _error(0) = VV->estimate()(2) - _measurement;
+    }
+    virtual void linearizeOplus(){
+        _jacobianOplusXi.setZero();
+        _jacobianOplusXi(0,2) = 1.0;
+    }
+};
+
 class EdgePriorAcc : public g2o::BaseUnaryEdge<3,Eigen::Vector3d,VertexAccBias>
 {
 public:
@@ -814,6 +832,23 @@ public:
     const Eigen::Vector3d bprior;
 };
 
+
+// WP B2: specific force at rest. a_mean - ba = Rwb^T * (0, 0, g). Numeric Jacobians.
+class EdgeRestGravity : public g2o::BaseBinaryEdge<3,Eigen::Vector3d,VertexPose,VertexAccBias>
+{
+public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    EdgeRestGravity(const Eigen::Vector3f &acc):acc_(acc.cast<double>()){}
+    virtual bool read(std::istream& is){return false;}
+    virtual bool write(std::ostream& os) const{return false;}
+    void computeError(){
+        const VertexPose* VP = static_cast<const VertexPose*>(_vertices[0]);
+        const VertexAccBias* VA = static_cast<const VertexAccBias*>(_vertices[1]);
+        const Eigen::Vector3d gUp(0.0, 0.0, IMU::GRAVITY_VALUE);
+        _error = acc_ - VA->estimate() - VP->estimate().Rwb.transpose() * gUp;
+    }
+    const Eigen::Vector3d acc_;
+};
 
 // Prior for velocity (Zero Velocity Update, ZUPT)
 class EdgePriorVelocity : public g2o::BaseUnaryEdge<3,Eigen::Vector3d,VertexVelocity>

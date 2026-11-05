@@ -36,13 +36,17 @@
 #include "System.h"
 #include "ImuTypes.h"
 #include "Settings.h"
+#include "PriorMap.h"
 #include "Kernels/CudaUtils.h"
 
 #include "GeometricCamera.h"
 
 #include <mutex>
+#include <deque>
 #include <unordered_set>
 #include <deque>
+#include <atomic>
+#include <memory>
 
 namespace ORB_SLAM3
 {
@@ -54,6 +58,18 @@ class LocalMapping;
 class LoopClosing;
 class System;
 class Settings;
+
+// Result of Tracking::PrepareMonocular(): a fully constructed Frame (ORB features extracted) plus
+// what TrackPreparedMonocular() needs. Namespace scope so System.h can forward-declare it.
+struct PreparedMonocularFrame
+{
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    Frame frame;
+    cv::Mat imGray;
+    double timestamp = 0.0;
+    std::string filename;
+    bool usedIniExtractor = false;
+};
 
 class Tracking
 {  
@@ -75,12 +91,34 @@ public:
     Sophus::SE3f GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const double &timestamp, string filename);
     Sophus::SE3f GrabImageMonocular(const cv::Mat &im, const double &timestamp, string filename);
 
+    // ---- Pipelined monocular input -------------------------------------------------------------
+    // GrabImageMonocular() = build the Frame (ORB extraction) + Track(), serially. The pipelined
+    // path splits it so the extraction of frame N+1 can run on another thread while frame N is in
+    // Track():
+    //   PrepareMonocular()       builds the Frame only (thread-safe w.r.t. the tracking thread);
+    //   TrackPreparedMonocular() does exactly what GrabImageMonocular() does after construction.
+    // Results equal the serial path: what the Frame constructor would have read from the previous
+    // frame (pointer + velocity) is applied at track time, and a prepared frame is re-extracted if
+    // its extractor choice went stale (tracking state changed meanwhile) or its ID is out of order.
+    using PreparedMonocular = PreparedMonocularFrame;
+    std::shared_ptr<PreparedMonocular> PrepareMonocular(const cv::Mat &im, const double &timestamp, string filename);
+    Sophus::SE3f TrackPreparedMonocular(const std::shared_ptr<PreparedMonocular> &prepared);
+    unsigned long PipelineReextractions() const { return mnPipelineReextractions.load(); }
+
     void GrabImuData(const IMU::Point &imuMeasurement);
 
     void SetLocalMapper(LocalMapping* pLocalMapper);
     void SetLoopClosing(LoopClosing* pLoopClosing);
     void SetViewer(Viewer* pViewer);
     void SetStepByStep(bool bSet);
+
+    // P1 (2026-10-30): per-frame pose optimization in TrackLocalMap. -1: the GPU run-mode flag decides (production
+    // gpu_pose_optimization=false skips it, so the frame pose is the IMU prediction and every match counts as an
+    // inlier); 0: never; 1: always; 2: once the active map has finished inertial BA2 (before BA2 as -1).
+    void SetPoseOptimizationMode(int mode) { mPoseOptMode = mode; }
+    // P3 (2026-10-30): modes 3/4 (turns): rotation-rate threshold (deg/s) and hold time (s) after the last turn frame.
+    void SetPoseOptimizationTurn(double rate_dps, double hold_s) { mPoseOptTurnRateDps = rate_dps; mPoseOptTurnHoldS = hold_s; }
+    int GetPoseOptimizationMode() const { return mPoseOptMode; }
     bool GetStepByStep();
 
     // Load new settings
@@ -165,12 +203,36 @@ public:
     // frames with estimated pose
     int mTrackedFr;
     bool mbStep;
+    int mPoseOptMode{-1};
+    double mPoseOptTurnRateDps{10.0};
+    double mPoseOptTurnHoldS{3.0};
+    double mPoseOptLastTurnT{-1.0};
+
+    // RESEARCH frame-epoch contract: map id and frame epoch under which the most recent Track()
+    // computed its pose (recorded while holding that map's mMutexMapUpdate).
+    unsigned long mnPoseMapId = 0;
+    unsigned long mnPoseFrameEpoch = 0;
+    bool mbPoseEpochRecorded = false;
 
     // True if local mapping is deactivated and we are performing only localization
     bool mbOnlyTracking;
 
     void Reset(bool bLocMap = false);
     void ResetActiveMap(bool bLocMap = false);
+
+    // Prior-map start (PriorMap.h / PriorMap.cc). Tracking-thread functions unless noted.
+    static bool sbInstallSigintHandler;  // set by System before constructing Tracking
+    void ConfigurePriorMap(const PriorMapOptions& opt, const PriorMapStatus& loadStatus, bool bLoaded);
+    PriorMapStatus GetPriorMapStatus();  // any thread
+    bool HasUsablePriorMap();
+    // One-shot tolerance for a known image gap (the wrapper paused for a map save): the next frame may be up to
+    // gapS later than the last one without the timestamp-jump reset/new map; the IMU predicts across it.
+    void AllowTimeGapOnce(double gapS) { mAllowedGapOnceS = gapS > 0.0 ? gapS : 0.0; }
+    bool ResetToPriorMap(std::string& reason);
+    bool StopMappingThreads(bool bResetLocalMapper, double gbaWaitS, std::string& reason);
+    void ReleaseMappingThreads();
+    void AdoptActiveMapAsPrior(const SaveMapResult& r);
+    void NotePriorSave(const SaveMapResult& r);
 
     float mMeanTrack;
     bool mbInitWith3KFs;
@@ -181,6 +243,14 @@ public:
 
 
     vector<MapPoint*> GetLocalMapMPS();
+
+    // Pipelined monocular input (see PrepareMonocular / TrackPreparedMonocular)
+    bool WantIniExtractorMonocular() const;
+    Frame BuildMonocularFrame(const cv::Mat &imGray, const double &timestamp, bool useIni);
+    std::mutex mMutexExtraction;              // one extraction at a time per extractor
+    bool mbHaveTrackedPrepared = false;
+    long unsigned int mnLastTrackedPreparedId = 0;
+    std::atomic<unsigned long> mnPipelineReextractions{0};
 
     bool mbWriteStats;
 
@@ -221,7 +291,35 @@ protected:
     bool TrackWithMotionModel();
     bool PredictStateIMU();
 
-    bool Relocalization();
+    bool Relocalization(Map* pTargetMap = nullptr);
+    int mnRelocBestBowMatches = 0;  // best SearchByBoW matches of the last Relocalization()
+    int mnRelocInliers = 0;         // inliers of the last successful Relocalization()
+    int mnRelocCandidates = 0, mnRelocBestPnpInliers = 0, mnRelocBestGood = 0;  // diagnostics of the last Relocalization()
+
+    // Prior-map start (PriorMap.cc)
+    enum PriorStep { kPriorNone = 0, kPriorWait, kPriorRelocalized };
+    PriorStep PriorMapStep(Map*& pCurrentMap, bool bSessionTracking = false);
+    void PriorMapOnRelocalizedKeyFrame();
+    void PriorMapOnLocalMapFail();
+    void PriorMapNoteMapReset(Map* pMap, const char* why);
+    void PriorMapWaitFrame();
+    void PriorMapClearFrameMatches();
+    bool PriorMapUsable();
+    void BeginPriorSession();
+    void SetPriorStatus(PriorMapStatus::State s, const std::string& reason);
+    PriorMapOptions mPriorOpt;
+    Map* mpPriorMap = nullptr;
+    PriorMapStatus mPriorStatus;
+    std::mutex mMutexPriorStatus;
+    unsigned long mnSessionFirstKFId = 0;
+    unsigned long mnSessionFirstMPId = 0;
+    unsigned long mnSessionFirstMapId = 0;
+    unsigned long mnPriorSessionFrames = 0;
+    int mnPriorConfirm = 0;
+    Sophus::SE3f mPriorConfirmTwb;
+    double mPriorConfirmT = 0.0;     // frame time of the last confirmation (moving attempts)
+    bool mbPriorConfirmMoving = false;
+    bool mbPriorForceMapUpdated = false;
 
     void UpdateLocalMap();
     void UpdateLocalPoints();
@@ -351,6 +449,93 @@ protected:
     double mZuptVelGate;       // low gate used to block entering stationary (m/s)
     double mZuptVelExitTh;     // sustained EMA velocity above which the hold is released (m/s)
     int    mZuptVelHyst;       // consecutive EMAs above the exit threshold before release
+    bool   mbZuptHoldRotation; // IMU.ZUPT.HoldRotation: while stationary also hold attitude (default off)
+    double mAllowedGapOnceS = 0.0;  // AllowTimeGapOnce
+    // IMU.ZUPT.StrongRest.*: IMU stillness that flight never produces overrides the velocity gates, because the
+    // estimated velocity is the signal that drifts when vision is weak (default off).
+    bool   mbZuptStrongRestEnabled;
+    double mZuptStrongGyroVarTh;   // (rad/s)^2 on the gyro magnitude over the window
+    double mZuptStrongAccelVarTh;  // (m/s^2)^2 on the accel magnitude over the window
+    double mZuptStrongMinS;        // seconds the strong-rest test must hold before it applies
+    double mZuptStrongSince;       // frame time the current strong-rest run began (-1: none)
+    bool   mbZuptStrongRest;       // strong rest currently applies
+public:
+    // B3 metric initialization (Init.Metric.*, default off): barometric height sets the initial map scale.
+    void AddAltitudeReference(double t, double h);
+    bool AltitudeAt(double t, double &h, double &hPad);
+    // C1 (2026-10-31): baro climb rate over the last 1 s above Metric.DeferClimbRate (false when off or no baro).
+    bool ClimbingAt(double t, double &rate);
+    double mDeferClimbRate = 0.0;
+    // C3 (2026-10-31): minimum triangulation parallax while climbing faster than mClimbParallaxRate (0 deg = off).
+    bool ClimbRateAbove(double t, double thr, double &rate);
+    double mClimbMinParallaxDeg = 0.0, mClimbParallaxRate = 0.5;
+    // C4 (2026-10-31): baro vertical-velocity factor in the local inertial BA.
+    bool mbBaroVz = false;
+    double mBaroVzSigma = 0.3, mBaroVzWindow = 1.0;
+    // C7 (2026-10-31): in-flight accelerometer-bias observer (Metric.AccBiasObs.*)
+    bool mbAccBiasObs = false;
+    double mAccBiasObsWindow = 10.0, mAccBiasObsSigma = 0.05, mAccBiasObsMaxStep = 0.3, mAccBiasObsMaxBias = 0.8,
+           mAccBiasObsMinHeight = 5.0;
+    int mAccBiasObsMinKFs = 20;
+    // C7c (2026-10-31): baro-inertial vertical KF [h, v_z, b_az] (Metric.VertKF.*)
+    bool mbVertKF = false;
+    double mVkfAccNoise = 0.5, mVkfBiasRW = 0.01, mVkfBaroNoise = 0.3, mVkfMinHeight = 5.0, mVkfMaxBias = 0.6,
+           mVkfMaxStep = 0.02, mVkfMaxSd = 0.03;
+    int mVkfChainKFs = 40;
+    bool GetVertKF(double &b, double &sd, double &h, double &vz);
+    bool LatestAltitude(double tNow, double &tSample, double &h, double &hPad);  // C7c fix
+    bool mbVkfUseFc = true;  // C7c v3: vertical specific force from the FC attitude
+    // C8 (2026-10-31): in-flight map tilt correction from the local ground plane (Metric.TiltCorr.*)
+    bool mbTiltCorr = false;
+    double mTiltCorrMinHeight = 20.0, mTiltCorrDeadband = 1.0, mTiltCorrGain = 0.5, mTiltCorrMaxStep = 0.5,
+           mTiltCorrMaxTotal = 10.0, mTiltCorrMinInlier = 0.6;
+    int mTiltCorrWindow = 15, mTiltCorrPeriod = 5;
+    int mTiltCorrSource = 0;  // C8f: 0 ground plane, 1 FC attitude
+    double mTiltCorrTurnRate = 15.0, mTiltCorrTurnHold = 0.0;  // C8f v2: hold after FC rate > TurnRate deg/s
+    double mTiltCorrSnapMax = 0.0; int mTiltCorrSnapMinObs = 3;  // C8s: first correction per map in one step
+    double mTiltCorrSnapResetDeg = 0.0;  // C8r: reset the active map if the snap measures more than this (0 = off)
+    bool LocalGroundNormal(KeyFrame* pKF, Eigen::Vector3f &nrm, int &nInl, int &nPts);
+    void VertKFPredict(double az, double dt);
+    void VertKFBaro(double t);
+    std::mutex mMutexVkf;
+    bool mVkfActive = false;
+    unsigned long mVkfMapId = 0;
+    double mVkfX[3] = {0.0, 0.0, 0.0}, mVkfP[3][3] = {{0}}, mVkfLastBaroT = 0.0;
+    bool mbClimbFullTail = false;  // C6 (2026-10-31)
+    float MetricInitScale(KeyFrame* pKFini, KeyFrame* pKFcur);
+    bool   mbMetricInitEnabled = false;
+    double mMetricPadCamHeight = 0.0;   // m, hint only: camera above the ground on the pad (estimated later)
+    bool BaroScaleFit(Map* pMap, const std::vector<KeyFrame*> &vpKF, double &s, double &c, int &n, double &range,
+                      double &rms);
+    double mMetricMinHeight = 3.0;
+    // B7 research: cruise scale correction from the B4 observation (Metric.Cruise.*).
+    bool mbCruiseScale = false;
+    int mCruiseWindow = 15, mCruisePeriod = 5;
+    double mCruiseGain = 0.5, mCruiseDeadband = 0.01, mCruiseMaxStep = 0.05, mCruiseMinHeight = 20.0,
+           mCruiseMaxTilt = 25.0, mCruiseMinInlier = 0.6;
+    double mInitMinAxisAngleDeg = 0.0;  // B4b: reject mono inits whose translation is within this angle of the optical axis
+    // B4 diagnostic: distance from the keyframe camera to the plane of its own map points, plane tilt from vertical.
+    bool LocalGroundDistance(KeyFrame* pKF, double &d, double &tiltDeg, int &nInl, int &nPts);      // m, minimum height above the pad for the metric scale
+    std::deque<std::pair<double,double>> mdAltRef;
+    std::mutex mMutexAltRef;
+    double mAltPad = 0.0; bool mbAltPad = false; double mAltFirstT = -1.0; std::vector<double> mvAltFirst;
+    // WP C1 (Klt.*, default off): KLT-guided association of the last frame's map points.
+    void KltAssociate();
+    bool   mbKltEnabled = false;
+    int    mKltWin = 21;
+    int    mKltLevels = 3;
+    double mKltMaxFb = 1.0;       // px, forward-backward error
+    double mKltRadius = 3.0;      // px, keypoint search radius around the tracked position
+    int    mKltMaxHamming = 100;  // descriptor sanity check (ORBmatcher::TH_HIGH)
+    bool   mbKltPersistent = false;  // C1b (2026-10-31): append KLT positions as observations
+    int    mKltMaxAppend = 200;
+    unsigned long mKltStatAppended = 0;
+    cv::Mat mKltPrevImg;          // previous grayscale image (clone)
+    unsigned long mKltStatFrames = 0, mKltStatTried = 0, mKltStatTracked = 0, mKltStatAssoc = 0;
+    // WP B2 (IMU.RestObs.*, default off): rest observations for the inertial optimizations.
+    bool   mbRestObsEnabled = false;
+    double mRestObsGyroSigma = 5e-4;  // rad/s, floor on the window-mean gyro uncertainty
+    double mRestObsAccSigma = 0.02;   // m/s^2, floor on the window-mean accel uncertainty
     int    mZuptVelExitCount;  // velocity-exit hysteresis counter
     double mZuptVelEma;        // EMA of the tracked velocity magnitude (m/s)
     bool mbZuptActive;       // current stationarity state
@@ -368,6 +553,7 @@ protected:
     double mExtMagYawOffsetRad;     // slam yaw - mag yaw (constant; absorbs Tcb + scalar offsets)
     double mExtBaroAltOffsetM;      // slam z - baro alt (constant; absorbs origin offset)
     double mExtMagYawSigmaDeg;      // trust sigma for the mag yaw prior
+    bool mbExtMagYawClockwise;      // nf1: heading is clockwise (target = offset - heading)
     double mExtBaroAltSigmaM;       // trust sigma for the baro alt prior
     bool mbExtRefPrinted;           // one-shot info print
     std::mutex mMutexExtRef;

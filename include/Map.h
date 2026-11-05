@@ -26,6 +26,9 @@
 #include <set>
 #include <pangolin/pangolin.h>
 #include <mutex>
+#include <atomic>
+#include <deque>
+#include <vector>
 
 #include <boost/serialization/base_object.hpp>
 
@@ -117,6 +120,19 @@ public:
 
     void ApplyScaledRotation(const Sophus::SE3f &T, const float s, const bool bScaledVel=false);
 
+    // RESEARCH frame-epoch contract (2026-10-08): every ApplyScaledRotation is a whole-map
+    // similarity transform p' = s*R*p + t. The epoch counts them; the bounded history lets a
+    // consumer that holds positions from an older epoch map them exactly into the current one.
+    struct FrameTransform
+    {
+        unsigned long epoch = 0;   // epoch reached by applying this transform
+        float s = 1.f;
+        Eigen::Quaternionf q = Eigen::Quaternionf::Identity();
+        Eigen::Vector3f t = Eigen::Vector3f::Zero();
+    };
+    unsigned long GetFrameEpoch() const { return mnFrameEpoch.load(); }
+    std::vector<FrameTransform> GetFrameTransforms();
+
     void SetInertialSensor();
     bool IsInertial();
     void SetIniertialBA1();
@@ -200,6 +216,10 @@ protected:
 
     // Mutex
     std::mutex mMutexMap;
+
+    std::atomic<unsigned long> mnFrameEpoch{0};
+    std::deque<FrameTransform> mFrameTransforms;  // protected by mMutexMap; last kFrameTransformHistory
+    static constexpr size_t kFrameTransformHistory = 16;
 
 };
 

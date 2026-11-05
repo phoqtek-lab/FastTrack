@@ -17,6 +17,7 @@
 */
 
 #include "Frame.h"
+#include <limits>  // FTS
 
 #include "G2oTypes.h"
 #include "MapPoint.h"
@@ -38,6 +39,7 @@ namespace ORB_SLAM3
 
 long unsigned int Frame::nNextId=0;
 bool Frame::mbInitialComputations=true;
+float Frame::msMaxKeypointRadius=0.f;
 float Frame::cx, Frame::cy, Frame::fx, Frame::fy, Frame::invfx, Frame::invfy;
 float Frame::mnMinX, Frame::mnMinY, Frame::mnMaxX, Frame::mnMaxY;
 float Frame::mfGridElementWidthInv, Frame::mfGridElementHeightInv;
@@ -45,7 +47,7 @@ float Frame::mfGridElementWidthInv, Frame::mfGridElementHeightInv;
 //For stereo fisheye matching
 cv::BFMatcher Frame::BFmatcher = cv::BFMatcher(cv::NORM_HAMMING);
 
-Frame::Frame(): mpcpi(NULL), mpImuPreintegrated(NULL), mpPrevFrame(NULL), mpImuPreintegratedFrame(NULL), mpReferenceKF(static_cast<KeyFrame*>(NULL)), mbIsSet(false), mbImuPreintegrated(false), mbIsStationary(false), mbHasPose(false), mbHasVelocity(false)
+Frame::Frame(): /* FTS */ mTimeStamp(std::numeric_limits<double>::quiet_NaN()), mpcpi(NULL), mpImuPreintegrated(NULL), mpPrevFrame(NULL), mpImuPreintegratedFrame(NULL), mpReferenceKF(static_cast<KeyFrame*>(NULL)), mbIsSet(false), mbImuPreintegrated(false), mbIsStationary(false), mbHasPose(false), mbHasVelocity(false)
 {
     FT_CALC_SCOPE();
 #ifdef REGISTER_TIMES
@@ -69,7 +71,7 @@ Frame::Frame(const Frame &frame)
      mfScaleFactor(frame.mfScaleFactor), mfLogScaleFactor(frame.mfLogScaleFactor),
      mvScaleFactors(frame.mvScaleFactors), mvInvScaleFactors(frame.mvInvScaleFactors), mNameFile(frame.mNameFile), mnDataset(frame.mnDataset),
      mvLevelSigma2(frame.mvLevelSigma2), mvInvLevelSigma2(frame.mvInvLevelSigma2), mpPrevFrame(frame.mpPrevFrame), mpLastKeyFrame(frame.mpLastKeyFrame),
-     mbIsSet(frame.mbIsSet), mbImuPreintegrated(frame.mbImuPreintegrated), mbIsStationary(frame.mbIsStationary), mpMutexImu(frame.mpMutexImu),
+     mbIsSet(frame.mbIsSet), mbImuPreintegrated(frame.mbImuPreintegrated), mbIsStationary(frame.mbIsStationary), mbIsStrongRest(frame.mbIsStrongRest), mpMutexImu(frame.mpMutexImu),
      mpCamera(frame.mpCamera), mpCamera2(frame.mpCamera2), Nleft(frame.Nleft), Nright(frame.Nright),
      monoLeft(frame.monoLeft), monoRight(frame.monoRight), mvLeftToRightMatch(frame.mvLeftToRightMatch),
      mvRightToLeftMatch(frame.mvRightToLeftMatch), mvStereo3Dpoints(frame.mvStereo3Dpoints),
@@ -355,6 +357,19 @@ Frame::Frame(const cv::Mat &imGray, const double &timeStamp, ORBextractor* extra
     mTimeORB_Ext = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndExtORB - time_StartExtORB).count();
 #endif
 
+    // B6 research: keep only keypoints within Features.MaxRadiusPx of the principal point.
+    if(msMaxKeypointRadius > 0.f && !mvKeys.empty() && pCamera)
+    {
+        const float pcx = pCamera->getParameter(2), pcy = pCamera->getParameter(3), r2max = msMaxKeypointRadius * msMaxKeypointRadius;
+        std::vector<cv::KeyPoint> keep; keep.reserve(mvKeys.size());
+        cv::Mat desc; desc.reserve(mvKeys.size());
+        for(size_t i = 0; i < mvKeys.size(); i++)
+        {
+            const float dx = mvKeys[i].pt.x - pcx, dy = mvKeys[i].pt.y - pcy;
+            if(dx * dx + dy * dy <= r2max) { keep.push_back(mvKeys[i]); desc.push_back(mDescriptors.row((int)i)); }
+        }
+        mvKeys.swap(keep); mDescriptors = desc; monoLeft = (int)mvKeys.size();
+    }
 
     N = mvKeys.size();
     FT_CALC_LOG("frame.features.monocular frame=%llu features=%d", static_cast<unsigned long long>(mnId), N);
@@ -773,6 +788,26 @@ vector<size_t> Frame::GetFeaturesInArea(const float &x, const float  &y, const f
     }
 
     return vIndices;
+}
+
+bool Frame::AppendObservation(const cv::KeyPoint &kp, const cv::KeyPoint &kpUn, const cv::Mat &desc, MapPoint* pMP)
+{
+    // C1b (2026-10-31)
+    if(Nleft != -1 || N < 0 || mvKeys.size() != (size_t)N || mvKeysUn.size() != (size_t)N || mvpMapPoints.size() != (size_t)N ||
+       mvbOutlier.size() != (size_t)N || mDescriptors.rows != N || desc.rows != 1 || desc.cols != mDescriptors.cols ||
+       desc.type() != mDescriptors.type())
+        return false;
+    int gx, gy;
+    if(!PosInGrid(kpUn, gx, gy))
+        return false;
+    mvKeys.push_back(kp); mvKeysUn.push_back(kpUn);
+    if(mvuRight.size() == (size_t)N) mvuRight.push_back(-1.f);
+    if(mvDepth.size() == (size_t)N) mvDepth.push_back(-1.f);
+    mvpMapPoints.push_back(pMP); mvbOutlier.push_back(false);
+    mDescriptors.push_back(desc);
+    mGrid[gx][gy].push_back((size_t)N);
+    N++;
+    return true;
 }
 
 bool Frame::PosInGrid(const cv::KeyPoint &kp, int &posX, int &posY)

@@ -282,6 +282,7 @@ Map* Atlas::GetCurrentMap()
 
 void Atlas::SetMapBad(Map* pMap)
 {
+    unique_lock<mutex> lock(mMutexAtlas);  // GetAllMaps() readers run in other threads
     mspMaps.erase(pMap);
     pMap->SetBad();
 
@@ -336,6 +337,8 @@ void Atlas::PreSave()
             return elem1->GetId() < elem2->GetId();
         }
     };
+    // A second save in the same process appended every map again (serialized twice, PostLoad twice).
+    mvpBackupMaps.clear();
     std::copy(mspMaps.begin(), mspMaps.end(), std::back_inserter(mvpBackupMaps));
     sort(mvpBackupMaps.begin(), mvpBackupMaps.end(), compFunctor());
 
@@ -352,6 +355,8 @@ void Atlas::PreSave()
         }
         pMi->PreSave(spCams);
     }
+    mvpBackupMaps.erase(std::remove_if(mvpBackupMaps.begin(), mvpBackupMaps.end(),
+                                       [](Map* p) { return !p || p->IsBad(); }), mvpBackupMaps.end());
     RemoveBadMaps();
 }
 
